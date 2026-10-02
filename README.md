@@ -1,5 +1,12 @@
 # MixMedia Video Editor
- just a small project im working on since i hate editors not being friendly and not working on Linux
+just a small project im working on since i hate editors not being friendly and not working on Linux
+
+# ⚠️ Disclaimer
+This project, for majority is vibe coded, it serves 2 purpose for me:
+
+1. Just me seeing how good Claude can be
+
+2. Having a personal video editor that suits my requirnments and is easy to use
 
 ## What it can do
 
