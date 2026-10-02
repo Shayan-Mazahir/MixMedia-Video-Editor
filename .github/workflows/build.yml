@@ -22,15 +22,24 @@ jobs:
         with:
           msystem: UCRT64
           update: true
-          install: >-
-            mingw-w64-ucrt-x86_64-gcc
-            mingw-w64-ucrt-x86_64-cmake
-            mingw-w64-ucrt-x86_64-ninja
-            mingw-w64-ucrt-x86_64-pkgconf
-            mingw-w64-ucrt-x86_64-qt6-base
-            mingw-w64-ucrt-x86_64-qt6-multimedia
-            mingw-w64-ucrt-x86_64-qt6-tools
-            mingw-w64-ucrt-x86_64-ffmpeg
+
+      # Download servers sometimes stall, so have a few goes before giving up
+      - name: Install tools
+        run: |
+          for attempt in 1 2 3; do
+            pacman -S --needed --noconfirm \
+              mingw-w64-ucrt-x86_64-gcc \
+              mingw-w64-ucrt-x86_64-cmake \
+              mingw-w64-ucrt-x86_64-ninja \
+              mingw-w64-ucrt-x86_64-pkgconf \
+              mingw-w64-ucrt-x86_64-qt6-base \
+              mingw-w64-ucrt-x86_64-qt6-multimedia \
+              mingw-w64-ucrt-x86_64-qt6-tools \
+              mingw-w64-ucrt-x86_64-ffmpeg && exit 0
+            echo "Download hiccup, trying again in 20 seconds (attempt $attempt)..."
+            sleep 20
+          done
+          exit 1
 
       - name: Build
         run: |
