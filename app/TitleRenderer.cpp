@@ -10,6 +10,8 @@
 #include <QPainterPath>
 #include <QStandardPaths>
 
+#include <cmath>
+
 namespace TitleRenderer {
 
 QImage render(const TitleStyle& style, QSize size)
@@ -24,7 +26,7 @@ QImage render(const TitleStyle& style, QSize size)
     p.setRenderHint(QPainter::TextAntialiasing);
 
     QFont font;
-    font.setPixelSize(std::max(4, size.height() * style.size / 100));
+    font.setPixelSize(std::max(4, int(std::lround(size.height() * style.size / 100))));
     font.setBold(style.bold);
     p.setFont(font);
 

@@ -12,6 +12,8 @@ qt_add_library(editor_ui STATIC
     MainWindow.h
     MediaBin.cpp
     MediaBin.h
+    NumberSlider.cpp
+    NumberSlider.h
     PreviewRenderer.cpp
     PreviewRenderer.h
     PreviewWidget.cpp
@@ -19,6 +21,7 @@ qt_add_library(editor_ui STATIC
     ProjectFile.cpp
     ProjectFile.h
     RenderClip.h
+    ThreadName.h
     TimelineClip.h
     TimelineWidget.cpp
     TimelineWidget.h

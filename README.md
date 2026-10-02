@@ -18,6 +18,11 @@ This project, for majority is vibe coded, it serves 2 purpose for me:
 - **Detach audio** into its own track, with a waveform
 - **Volume and fades** per clip (fade the top clip in over another for a cross-dissolve)
 - **Titles** with your own text, size, colour and position
+- **Effects**: one-click looks (black & white, sepia, vintage, vivid, cool, warm, faded, dramatic) plus brightness, contrast, colour, warmth, blur, sharpen and vignette
+- **Picture-in-picture**: resize, move and fade any clip over another
+- **Speed**: slow motion and fast forward, from 0.1× to 10×
+- **Precise controls**: every slider has a box for typing exact numbers
+- **Drag files in** straight from your file manager, plus right-click menus and keyboard shortcuts (arrows to step frames, ↑ ↓ to jump between cuts)
 - **Projects**: save and open `.mixmedia` files
 - **Export to MP4**
   - *Instant*: copies simple cuts without re-encoding, so it takes seconds

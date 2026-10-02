@@ -11,6 +11,9 @@
 #include <QMimeData>
 #include <QPainter>
 #include <QPainterPath>
+#include <QContextMenuEvent>
+#include <QMenu>
+#include <QScrollBar>
 
 #include <algorithm>
 #include <cmath>
@@ -67,8 +70,17 @@ TimelineWidget::TimelineWidget(QWidget* parent)
     setAcceptDrops(true);
     setMouseTracking(true); // so the cursor can change over clip edges
     setFocusPolicy(Qt::ClickFocus);
-    connect(m_filmstrip, &FilmstripCache::tileReady, this, qOverload<>(&QWidget::update));
-    connect(m_waveforms, &WaveformCache::ready, this, qOverload<>(&QWidget::update));
+    connect(m_filmstrip, &FilmstripCache::tileReady, this, [this] { invalidate(); });
+    connect(m_waveforms, &WaveformCache::ready, this, [this] { invalidate(); });
+
+    // Scrollbar along the bottom, for people who'd rather drag than scroll
+    m_scrollBar = new QScrollBar(Qt::Horizontal, this);
+    connect(m_scrollBar, &QScrollBar::valueChanged, this, [this](int value) {
+        if (value != int(m_scrollX)) {
+            m_scrollX = value;
+            invalidate();
+        }
+    });
 }
 
 QSize TimelineWidget::sizeHint() const
@@ -90,6 +102,19 @@ QList<RenderClip> TimelineWidget::renderClips(const std::function<QString(const 
         r.volume = c.volume;
         r.fadeIn = c.fadeIn;
         r.fadeOut = c.fadeOut;
+        r.speed = c.speed;
+        r.opacity = c.opacity;
+        r.scale = c.scale;
+        r.posX = c.posX;
+        r.posY = c.posY;
+        r.look = c.look;
+        r.brightness = c.brightness;
+        r.contrast = c.contrast;
+        r.saturation = c.saturation;
+        r.temperature = c.temperature;
+        r.blur = c.blur;
+        r.sharpen = c.sharpen;
+        r.vignette = c.vignette;
         // Tracks higher up the list sit on top in the picture
         r.layer = int(m_tracks.size()) - c.track;
         if (!r.path.isEmpty())
@@ -106,6 +131,12 @@ void TimelineWidget::setClips(const QList<TimelineClip>& clips)
     select(-1);
     zoomToFit();
     changed();
+}
+
+void TimelineWidget::selectClip(int index)
+{
+    select(index >= 0 && index < m_clips.size() ? index : -1);
+    invalidate();
 }
 
 void TimelineWidget::select(int index)
@@ -130,6 +161,39 @@ void TimelineWidget::updateClip(int index, const TimelineClip& clip, const QStri
     m_lastEditClock.restart();
 
     m_clips[index] = clip;
+    changed();
+}
+
+void TimelineWidget::setClipSpeed(int index, double speed)
+{
+    if (index < 0 || index >= m_clips.size())
+        return;
+    speed = std::clamp(speed, 0.1, 10.0);
+    const TimelineClip before = m_clips[index];
+    if (before.isStill() || before.isTitle() || std::abs(before.speed - speed) < 1e-9)
+        return;
+
+    // Same bit of the file, played faster or slower, so the clip gets shorter or longer
+    double newDuration = std::min(before.sourceSpan() / speed, (before.sourceDuration - before.in) / speed);
+    double change = newDuration - before.duration;
+
+    pushUndo(m_clips);
+    QList<int> group = partnersOf(index);
+    QList<int> tracks;
+    for (int i : group) {
+        TimelineClip& c = m_clips[i];
+        c.speed = speed;
+        c.duration = newDuration;
+        c.fadeIn = std::min(c.fadeIn, newDuration);
+        c.fadeOut = std::min(c.fadeOut, newDuration);
+        tracks << c.track;
+    }
+    // Slide whatever comes after along, so nothing overlaps (or leaves a gap)
+    for (int i = 0; i < m_clips.size(); ++i) {
+        TimelineClip& c = m_clips[i];
+        if (!group.contains(i) && tracks.contains(c.track) && c.start >= before.end() - 1e-6)
+            c.start = std::max(0.0, c.start + change);
+    }
     changed();
 }
 
@@ -189,8 +253,43 @@ double TimelineWidget::duration() const
 void TimelineWidget::setPlayhead(double sec)
 {
     m_playhead = std::max(0.0, sec);
+    double scrollBefore = m_scrollX;
     keepPlayheadVisible();
+    if (m_scrollX != scrollBefore)
+        invalidate(); // the view moved, so everything shifts
+    else
+        update(); // just the playhead, the cached picture is still good
+}
+
+void TimelineWidget::invalidate()
+{
+    m_cacheDirty = true;
+    syncScrollBar();
     update();
+}
+
+void TimelineWidget::syncScrollBar()
+{
+    double visible = width() - HeaderWidth;
+    int maxScroll = int(std::max(0.0, duration() * m_pixelsPerSecond - visible * 0.5));
+    QSignalBlocker quiet(m_scrollBar);
+    m_scrollBar->setRange(0, maxScroll);
+    m_scrollBar->setPageStep(int(visible));
+    m_scrollBar->setSingleStep(int(visible / 20) + 1);
+    m_scrollBar->setValue(int(m_scrollX));
+    m_scrollBar->setGeometry(HeaderWidth, height() - 12, width() - HeaderWidth, 12);
+    m_scrollBar->setVisible(maxScroll > 0);
+}
+
+QList<double> TimelineWidget::cutPoints() const
+{
+    QList<double> points { 0.0 };
+    for (const TimelineClip& c : m_clips)
+        points << c.start << c.end();
+    std::sort(points.begin(), points.end());
+    points.erase(std::unique(points.begin(), points.end(), [](double a, double b) { return std::abs(a - b) < 1e-6; }),
+                 points.end());
+    return points;
 }
 
 void TimelineWidget::appendClips(const QList<TimelineClip>& clips)
@@ -313,24 +412,40 @@ double TimelineWidget::freeStart(const QList<TimelineClip>& clips, int track,
     return start;
 }
 
-QList<TimelineClip> TimelineWidget::layoutDrop(const QMimeData* mime, const QPoint& pos) const
+QList<TimelineClip> TimelineWidget::clipsFromMime(const QMimeData* mime)
 {
-    QList<TimelineClip> placed;
+    QList<TimelineClip> clips;
     if (!mime->hasFormat(MediaBin::MimeType))
-        return placed;
-
+        return clips;
     QByteArray data = mime->data(MediaBin::MimeType);
     QDataStream in(&data, QIODevice::ReadOnly);
     qint32 count = 0;
     in >> count;
+    for (int n = 0; n < count && in.status() == QDataStream::Ok; ++n) {
+        TimelineClip clip;
+        in >> clip;
+        clips << clip;
+    }
+    return clips;
+}
 
+QStringList TimelineWidget::filesFromMime(const QMimeData* mime)
+{
+    QStringList files;
+    for (const QUrl& url : mime->urls())
+        if (url.isLocalFile())
+            files << url.toLocalFile();
+    return files;
+}
+
+QList<TimelineClip> TimelineWidget::layoutDrop(const QList<TimelineClip>& clips, const QPoint& pos) const
+{
+    QList<TimelineClip> placed;
     QList<TimelineClip> all = m_clips;
     int wantedTrack = trackAt(pos.y());
     double start = std::max(0.0, xToSec(pos.x()));
 
-    for (int n = 0; n < count && in.status() == QDataStream::Ok; ++n) {
-        TimelineClip clip;
-        in >> clip;
+    for (TimelineClip clip : clips) {
         clip.track = pickTrack(wantedTrack, clip.audioOnly());
         if (clip.track < 0)
             continue;
@@ -425,13 +540,13 @@ void TimelineWidget::dragTrim(const QPoint& pos, bool left)
         // Can't go past the clip before it, or before the start of the file
         double lo = std::max(0.0, neighbourBefore(m_selected));
         if (!c.isStill())
-            lo = std::max(lo, c.start - c.in);
+            lo = std::max(lo, c.start - c.in / c.speed); // (the file runs `speed` times faster than the timeline)
         double hi = c.end() - MinClipSeconds;
         t = std::max(lo, std::min(t, hi));
 
         double delta = t - c.start;
         if (!c.isStill())
-            c.in += delta;
+            c.in += delta * c.speed;
         c.start = t;
         c.duration -= delta;
     } else {
@@ -439,7 +554,7 @@ void TimelineWidget::dragTrim(const QPoint& pos, bool left)
         double lo = c.start + MinClipSeconds;
         double hi = neighbourAfter(m_selected);
         if (!c.isStill())
-            hi = std::min(hi, c.start + c.sourceDuration - c.in);
+            hi = std::min(hi, c.start + (c.sourceDuration - c.in) / c.speed);
         t = std::max(lo, std::min(t, hi));
         c.duration = t - c.start;
     }
@@ -453,6 +568,7 @@ void TimelineWidget::syncPartners()
     for (int i : m_dragPartners) {
         m_clips[i].start = me.start;
         m_clips[i].in = me.in;
+        m_clips[i].speed = me.speed;
         m_clips[i].duration = me.duration;
     }
 }
@@ -481,7 +597,7 @@ void TimelineWidget::splitAtPlayhead()
         TimelineClip& left = m_clips[i];
         TimelineClip right = left;
         right.start = m_playhead;
-        right.in = left.isStill() ? 0.0 : left.in + (m_playhead - left.start);
+        right.in = left.isStill() ? 0.0 : left.in + (m_playhead - left.start) * left.speed;
         right.duration = left.end() - m_playhead;
         left.duration = m_playhead - left.start;
         // Fades belong to the outer ends, not the new cut in the middle
@@ -503,7 +619,7 @@ QList<int> TimelineWidget::partnersOf(int index) const
     for (int i = 0; i < m_clips.size(); ++i) {
         const TimelineClip& c = m_clips[i];
         if (i != index && c.path == me.path && std::abs(c.start - me.start) < 1e-6
-            && std::abs(c.in - me.in) < 1e-6 && std::abs(c.duration - me.duration) < 1e-6)
+            && std::abs(c.in - me.in) < 1e-6 && std::abs(c.duration - me.duration) < 1e-6 && c.speed == me.speed)
             out << i;
     }
     return out;
@@ -565,7 +681,7 @@ void TimelineWidget::pushUndo(const QList<TimelineClip>& state)
 
 void TimelineWidget::changed()
 {
-    update();
+    invalidate();
     emit clipsChanged();
 }
 
@@ -577,7 +693,7 @@ void TimelineWidget::zoomToFit()
     double visible = std::max(100, width() - HeaderWidth - 30);
     m_pixelsPerSecond = std::clamp(visible / total, MinZoom, MaxZoom);
     m_scrollX = 0;
-    update();
+    invalidate();
 }
 
 void TimelineWidget::zoomBy(double factor)
@@ -590,7 +706,7 @@ void TimelineWidget::zoomBy(double factor)
     m_pixelsPerSecond = std::clamp(m_pixelsPerSecond * factor, MinZoom, MaxZoom);
     m_scrollX = anchor * m_pixelsPerSecond - (anchorX - HeaderWidth);
     clampScroll();
-    update();
+    invalidate();
 }
 
 void TimelineWidget::clampScroll()
@@ -612,40 +728,53 @@ void TimelineWidget::keepPlayheadVisible()
 
 void TimelineWidget::dragEnterEvent(QDragEnterEvent* event)
 {
-    if (event->mimeData()->hasFormat(MediaBin::MimeType))
+    // Clips from the media panel, or files straight from the file manager
+    if (event->mimeData()->hasFormat(MediaBin::MimeType) || !filesFromMime(event->mimeData()).isEmpty())
         event->acceptProposedAction();
 }
 
 void TimelineWidget::dragMoveEvent(QDragMoveEvent* event)
 {
-    m_ghosts = layoutDrop(event->mimeData(), event->position().toPoint());
+    if (!filesFromMime(event->mimeData()).isEmpty()) {
+        event->acceptProposedAction(); // we don't know how long they are until they're imported
+        return;
+    }
+    m_ghosts = layoutDrop(clipsFromMime(event->mimeData()), event->position().toPoint());
     if (m_ghosts.isEmpty())
         event->ignore();
     else
         event->acceptProposedAction();
-    update();
+    invalidate();
 }
 
 void TimelineWidget::dragLeaveEvent(QDragLeaveEvent*)
 {
     m_ghosts.clear();
-    update();
+    invalidate();
 }
 
 void TimelineWidget::dropEvent(QDropEvent* event)
 {
     m_ghosts.clear();
-    QList<TimelineClip> placed = layoutDrop(event->mimeData(), event->position().toPoint());
-    if (placed.isEmpty()) {
-        update();
-        return;
-    }
+    QPoint pos = event->position().toPoint();
+    QStringList files = filesFromMime(event->mimeData());
+    event->acceptProposedAction();
+    if (!files.isEmpty())
+        emit filesDropped(files, pos); // the main window imports them, then calls dropClips
+    else
+        dropClips(clipsFromMime(event->mimeData()), pos);
+    invalidate();
+}
 
+void TimelineWidget::dropClips(const QList<TimelineClip>& clips, const QPoint& pos)
+{
+    QList<TimelineClip> placed = layoutDrop(clips, pos);
+    if (placed.isEmpty())
+        return;
     pushUndo(m_clips);
     bool wasEmpty = m_clips.isEmpty();
     m_clips << placed;
     select(int(m_clips.size()) - 1);
-    event->acceptProposedAction();
     if (wasEmpty)
         zoomToFit(); // first clip in? show the whole thing
     changed();
@@ -682,7 +811,7 @@ void TimelineWidget::mousePressEvent(QMouseEvent* event)
         m_playhead = std::max(0.0, xToSec(pos.x()));
         emit playheadMoved(m_playhead);
     }
-    update();
+    invalidate();
 }
 
 void TimelineWidget::mouseMoveEvent(QMouseEvent* event)
@@ -702,7 +831,8 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event)
     case Drag::Playhead:
         m_playhead = std::max(0.0, xToSec(pos.x()));
         emit playheadMoved(m_playhead);
-        break;
+        update(); // only the playhead moved
+        return;
     case Drag::Move:
         dragMove(pos);
         emit clipsChanged();
@@ -713,7 +843,7 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event)
         emit clipsChanged();
         break;
     }
-    update();
+    invalidate();
 }
 
 void TimelineWidget::mouseReleaseEvent(QMouseEvent*)
@@ -735,7 +865,7 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent*)
         pushUndo(m_beforeDrag);
         changed();
     } else {
-        update();
+        invalidate();
     }
 }
 
@@ -754,7 +884,7 @@ void TimelineWidget::wheelEvent(QWheelEvent* event)
         m_scrollX -= delta;
     }
     clampScroll();
-    update();
+    invalidate();
     event->accept();
 }
 
@@ -772,27 +902,69 @@ void TimelineWidget::resizeEvent(QResizeEvent* event)
 {
     QWidget::resizeEvent(event);
     clampScroll();
+    syncScrollBar();
+}
+
+void TimelineWidget::contextMenuEvent(QContextMenuEvent* event)
+{
+    QPoint pos = event->pos();
+    if (pos.x() < HeaderWidth)
+        return;
+    int hit = pos.y() >= RulerHeight ? clipAt(pos) : -1;
+    double at = std::max(0.0, xToSec(pos.x()));
+
+    QMenu menu(this);
+    if (hit >= 0) {
+        select(hit);
+        invalidate();
+        const TimelineClip& clip = m_clips[hit];
+        menu.addAction("Split here", this, [this, at] {
+            setPlayhead(at);
+            emit playheadMoved(at);
+            splitAtPlayhead();
+        });
+        menu.addAction("Delete", this, [this] { deleteSelected(); });
+        menu.addAction("Delete, leaving a gap", this, [this] { deleteSelectedKeepGap(); });
+        if (clip.showsVideo() && clip.playsAudio())
+            menu.addAction("Detach audio", this, &TimelineWidget::detachAudio);
+        menu.addSeparator();
+    }
+    menu.addAction("Add a title here", this, [this, at] {
+        setPlayhead(at);
+        emit playheadMoved(at);
+        addTitle();
+    });
+    menu.exec(event->globalPos());
 }
 
 // ---- Drawing ----
 
 void TimelineWidget::paintEvent(QPaintEvent*)
 {
+    // Everything except the playhead gets drawn once and kept, so during playback
+    // (when only the playhead moves) we're just copying a picture, not redrawing the lot
+    const qreal dpr = devicePixelRatioF();
+    if (m_cacheDirty || m_cache.size() != size() * dpr) {
+        m_cache = QPixmap(size() * dpr);
+        m_cache.setDevicePixelRatio(dpr);
+        QPainter c(&m_cache);
+        c.setRenderHint(QPainter::Antialiasing);
+        c.fillRect(rect(), Background);
+        drawTracks(c);
+        c.save();
+        c.setClipRect(contentRect());
+        for (int i = 0; i < m_clips.size(); ++i)
+            drawClip(c, m_clips[i], i == m_selected, false);
+        for (const TimelineClip& ghost : m_ghosts)
+            drawClip(c, ghost, false, true);
+        c.restore();
+        drawRuler(c);
+        m_cacheDirty = false;
+    }
+
     QPainter p(this);
+    p.drawPixmap(0, 0, m_cache);
     p.setRenderHint(QPainter::Antialiasing);
-    p.fillRect(rect(), Background);
-
-    drawTracks(p);
-
-    p.save();
-    p.setClipRect(contentRect());
-    for (int i = 0; i < m_clips.size(); ++i)
-        drawClip(p, m_clips[i], i == m_selected, false);
-    for (const TimelineClip& ghost : m_ghosts)
-        drawClip(p, ghost, false, true);
-    p.restore();
-
-    drawRuler(p);
     drawPlayhead(p);
 }
 
@@ -869,7 +1041,7 @@ void TimelineWidget::drawFilmstrip(QPainter& p, const TimelineClip& clip, const 
     static const double grid[] = { 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1200, 1800 };
     double q = grid[std::size(grid) - 1];
     for (double g : grid) {
-        if (g >= secPerTile * 0.5) {
+        if (g >= secPerTile * clip.speed * 0.5) {
             q = g;
             break;
         }
@@ -882,7 +1054,7 @@ void TimelineWidget::drawFilmstrip(QPainter& p, const TimelineClip& clip, const 
             break;
         QRectF tileRect(x, r.top(), tileW, r.height());
 
-        double src = clip.isStill() ? 0.0 : std::floor((clip.in + i * secPerTile) / q) * q;
+        double src = clip.isStill() ? 0.0 : std::floor((clip.in + i * secPerTile * clip.speed) / q) * q;
         QImage img = m_filmstrip->tile(clip.path, src);
         if (!img.isNull())
             p.drawImage(tileRect, img);
@@ -977,9 +1149,9 @@ void TimelineWidget::drawWaveform(QPainter& p, const TimelineClip& clip, const Q
 
     p.setPen(QColor(170, 235, 200, 190));
     for (int x = from; x < to; ++x) {
-        double src = clip.in + (x - r.left()) * secPerPixel;
+        double src = clip.in + (x - r.left()) * secPerPixel * clip.speed;
         int a = int(src * WaveformCache::PerSecond);
-        int b = std::max(a + 1, int((src + secPerPixel) * WaveformCache::PerSecond));
+        int b = std::max(a + 1, int((src + secPerPixel * clip.speed) * WaveformCache::PerSecond));
         float peak = 0.0f;
         for (int i = std::max(a, 0); i < std::min<int>(b, peaks.size()); ++i)
             peak = std::max(peak, peaks[i]);

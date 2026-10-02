@@ -30,5 +30,6 @@ public:
 
 protected:
     QStringList mimeTypes() const override;
+    void paintEvent(QPaintEvent* event) override;
     QMimeData* mimeData(const QList<QListWidgetItem*>& items) const override;
 };

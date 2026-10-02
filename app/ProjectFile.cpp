@@ -57,6 +57,21 @@ QJsonObject clipToJson(const TimelineClip& c, const QDir& dir)
         { "volume", c.volume },
         { "fadeIn", c.fadeIn },
         { "fadeOut", c.fadeOut },
+        { "speed", c.speed },
+        { "opacity", c.opacity },
+        { "scale", c.scale },
+        { "posX", c.posX },
+        { "posY", c.posY },
+        { "effects", QJsonObject {
+            { "look", c.look },
+            { "brightness", c.brightness },
+            { "contrast", c.contrast },
+            { "saturation", c.saturation },
+            { "temperature", c.temperature },
+            { "blur", c.blur },
+            { "sharpen", c.sharpen },
+            { "vignette", c.vignette },
+        } },
     };
     if (c.isTitle()) {
         o["title"] = QJsonObject {
@@ -93,10 +108,24 @@ TimelineClip clipFromJson(const QJsonObject& o, const QDir& dir, QStringList* mi
     c.volume = float(o["volume"].toDouble(1.0));
     c.fadeIn = o["fadeIn"].toDouble();
     c.fadeOut = o["fadeOut"].toDouble();
+    c.speed = o["speed"].toDouble(1.0);
+    c.opacity = float(o["opacity"].toDouble(1.0));
+    c.scale = float(o["scale"].toDouble(1.0));
+    c.posX = float(o["posX"].toDouble());
+    c.posY = float(o["posY"].toDouble());
+    QJsonObject fx = o["effects"].toObject();
+    c.look = fx["look"].toInt();
+    c.brightness = float(fx["brightness"].toDouble());
+    c.contrast = float(fx["contrast"].toDouble());
+    c.saturation = float(fx["saturation"].toDouble());
+    c.temperature = float(fx["temperature"].toDouble());
+    c.blur = float(fx["blur"].toDouble());
+    c.sharpen = float(fx["sharpen"].toDouble());
+    c.vignette = float(fx["vignette"].toDouble());
     if (c.isTitle()) {
         QJsonObject t = o["title"].toObject();
         c.title.text = t["text"].toString();
-        c.title.size = t["size"].toInt(8);
+        c.title.size = t["size"].toDouble(8.0);
         c.title.color = QColor(t["color"].toString("#ffffffff"));
         c.title.y = t["y"].toDouble(0.82);
         c.title.box = t["box"].toBool(true);

@@ -17,6 +17,12 @@
 #include <QAction>
 #include <QApplication>
 #include <QCloseEvent>
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QListWidgetItem>
+#include <QMimeData>
+#include <QPointer>
+#include <QThreadPool>
 #if defined(Q_OS_LINUX)
 #include <QDBusConnection>
 #include <QDBusMessage>
@@ -93,12 +99,15 @@ void showInFileManager(const QString& file)
 }
 
 // Draws the thumbnail (or a music note for audio files) centred on a black card.
-QPixmap makeThumbnail(const QString& path, const ve_media_info& info)
+// withPicture = false makes a quick placeholder; true decodes a frame (do that off the main thread).
+QImage makeThumbnail(const QString& path, const ve_media_info& info, bool withPicture)
 {
-    QPixmap card(ThumbW, ThumbH);
+    QImage card(ThumbW, ThumbH, QImage::Format_RGB32);
     card.fill(QColor(0x0e, 0x0f, 0x10));
     QPainter p(&card);
 
+    if (info.has_video && !withPicture)
+        return card; // the real picture is on its way
     if (info.has_video) {
         std::vector<uint8_t> pixels(ThumbW * ThumbH * 4);
         int w = 0, h = 0;
@@ -127,7 +136,7 @@ MainWindow::MainWindow(QWidget* parent)
 {
     m_timeline = new TimelineWidget;
     m_inspector = new ClipInspector;
-    m_inspector->setMinimumWidth(240);
+    m_inspector->setMinimumWidth(310);
 
     auto* top = new QSplitter(Qt::Horizontal);
     top->addWidget(buildMediaPanel());
@@ -149,7 +158,10 @@ MainWindow::MainWindow(QWidget* parent)
     connect(m_timeline, &TimelineWidget::clipsChanged, this, &MainWindow::onClipsChanged);
     connect(m_timeline, &TimelineWidget::selectionChanged, this, &MainWindow::refreshInspector);
     connect(m_inspector, &ClipInspector::edited, m_timeline, &TimelineWidget::updateClip);
+    connect(m_inspector, &ClipInspector::speedChanged, m_timeline, &TimelineWidget::setClipSpeed);
     connect(m_inspector, &ClipInspector::detachAudioClicked, m_timeline, &TimelineWidget::detachAudio);
+    connect(m_timeline, &TimelineWidget::filesDropped, this, &MainWindow::onFilesDroppedOnTimeline);
+    setAcceptDrops(true); // drag files in from the file manager
     connect(m_timeline, &TimelineWidget::playheadMoved, this, &MainWindow::onPlayheadMoved);
     connect(m_renderer, &PreviewRenderer::frameReady, m_preview, [this](const QImage& frame, double) {
         m_preview->setFrame(frame);
@@ -216,6 +228,20 @@ void MainWindow::buildActions()
     edit->addActions({ split, del, delGap, detach, title });
     QMenu* view = menuBar()->addMenu("&View");
     view->addActions({ zoomIn, zoomOut, fit });
+    // Getting around. These work from anywhere in the window.
+    QMenu* playback = menuBar()->addMenu("&Playback");
+    playback->addAction(make("&Play / pause", { QKeySequence(Qt::Key_Space) }, "Play or pause", &MainWindow::togglePlay));
+    playback->addSeparator();
+    playback->addAction(make("Back one frame", { QKeySequence(Qt::Key_Left) }, "Step back a frame", [this] { stepFrames(-1); }));
+    playback->addAction(make("Forward one frame", { QKeySequence(Qt::Key_Right) }, "Step forward a frame", [this] { stepFrames(1); }));
+    playback->addAction(make("Back one second", { QKeySequence("Shift+Left") }, "Jump back a second", [this] { seekBy(-1.0); }));
+    playback->addAction(make("Forward one second", { QKeySequence("Shift+Right") }, "Jump forward a second", [this] { seekBy(1.0); }));
+    playback->addSeparator();
+    playback->addAction(make("Previous cut", { QKeySequence(Qt::Key_Up) }, "Jump to the previous cut", [this] { jumpToCut(-1); }));
+    playback->addAction(make("Next cut", { QKeySequence(Qt::Key_Down) }, "Jump to the next cut", [this] { jumpToCut(1); }));
+    playback->addAction(make("Go to start", { QKeySequence(Qt::Key_Home) }, "Go to the start", &MainWindow::goToStart));
+    playback->addAction(make("Go to end", { QKeySequence(Qt::Key_End) }, "Go to the end", [this] { seekTo(m_timeline->duration()); }));
+
     QMenu* help = menuBar()->addMenu("&Help");
     help->addAction(make("&About MixMedia", {}, "Who made this, and the licence", &MainWindow::showAbout));
     help->addAction(make("About &Qt", {}, "About the Qt toolkit", [] { QApplication::aboutQt(); }));
@@ -246,11 +272,6 @@ void MainWindow::buildActions()
         button->setStyleSheet("QToolButton { background: #2fc6b4; color: black; font-weight: bold;"
                               " padding: 4px 14px; border-radius: 4px; }");
 
-    // Space works from anywhere in the window
-    auto* play = new QAction(this);
-    play->setShortcut(QKeySequence(Qt::Key_Space));
-    connect(play, &QAction::triggered, this, &MainWindow::togglePlay);
-    addAction(play);
 }
 
 QWidget* MainWindow::buildMediaPanel()
@@ -274,6 +295,30 @@ QWidget* MainWindow::buildMediaPanel()
 
     connect(m_mediaBin, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem* item) {
         m_timeline->appendClips({ m_mediaBin->clipFor(item) });
+    });
+
+    // Right-click menu on media
+    m_mediaBin->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_mediaBin, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) {
+        QMenu menu(this);
+        QList<QListWidgetItem*> picked = m_mediaBin->selectedItems();
+        if (!picked.isEmpty()) {
+            menu.addAction("Add to the end of the timeline", this, [this, picked] {
+                QList<TimelineClip> clips;
+                for (QListWidgetItem* item : picked)
+                    clips << m_mediaBin->clipFor(item);
+                m_timeline->appendClips(clips);
+            });
+            menu.addAction("Remove from project", this, [this, picked] {
+                // Clips already on the timeline stay put, this just tidies the media panel
+                for (QListWidgetItem* item : picked)
+                    delete item;
+                setDirty(true);
+            });
+            menu.addSeparator();
+        }
+        menu.addAction("Import media…", this, &MainWindow::importMedia);
+        menu.exec(m_mediaBin->viewport()->mapToGlobal(pos));
     });
 
     return panel;
@@ -331,26 +376,53 @@ void MainWindow::importMedia()
     importFiles(paths);
 }
 
-void MainWindow::importFiles(const QStringList& paths, bool quiet)
+QList<QListWidgetItem*> MainWindow::importFiles(const QStringList& paths, bool quiet)
 {
+    QList<QListWidgetItem*> added;
     if (paths.isEmpty())
-        return;
+        return added;
 
-    int added = 0;
     QStringList failures;
     for (const QString& path : paths) {
         QString error;
-        if (addMediaItem(path, &error))
-            ++added;
+        if (QListWidgetItem* item = addMediaItem(path, &error))
+            added << item;
         else
             failures << QString("%1 — %2").arg(QFileInfo(path).fileName(), error);
     }
 
-    if (added > 0)
+    if (!added.isEmpty())
         setDirty(true);
-    statusBar()->showMessage(QString("Imported %1 file(s)").arg(added), 5000);
+    statusBar()->showMessage(QString("Imported %1 file(s)").arg(added.size()), 5000);
     if (!failures.isEmpty() && !quiet)
         QMessageBox::warning(this, "Some files didn't import", failures.join('\n'));
+    return added;
+}
+
+void MainWindow::dragEnterEvent(QDragEnterEvent* event)
+{
+    if (event->mimeData()->hasUrls())
+        event->acceptProposedAction();
+}
+
+void MainWindow::dropEvent(QDropEvent* event)
+{
+    // Files dropped anywhere outside the timeline go into the media panel
+    QStringList files;
+    for (const QUrl& url : event->mimeData()->urls())
+        if (url.isLocalFile())
+            files << url.toLocalFile();
+    event->acceptProposedAction();
+    // Let the drop finish before we open any dialogs (like "save changes?")
+    QTimer::singleShot(0, this, [this, files] { openFiles(files); });
+}
+
+void MainWindow::onFilesDroppedOnTimeline(const QStringList& files, const QPoint& pos)
+{
+    QList<TimelineClip> clips;
+    for (QListWidgetItem* item : importFiles(files))
+        clips << m_mediaBin->clipFor(item);
+    m_timeline->dropClips(clips, pos);
 }
 
 void MainWindow::openFiles(const QStringList& paths)
@@ -366,13 +438,13 @@ void MainWindow::openFiles(const QStringList& paths)
     importFiles(media);
 }
 
-bool MainWindow::addMediaItem(const QString& path, QString* error)
+QListWidgetItem* MainWindow::addMediaItem(const QString& path, QString* error)
 {
     ve_media_info info;
     int rc = ve_probe(path.toUtf8().constData(), &info);
     if (rc != VE_OK) {
         *error = ve_error_string(rc);
-        return false;
+        return nullptr;
     }
 
     QString name = QFileInfo(path).fileName();
@@ -389,7 +461,7 @@ bool MainWindow::addMediaItem(const QString& path, QString* error)
                        .arg(info.sample_rate).arg(info.channels)
                        .arg(info.audio_codec);
 
-    auto* item = new QListWidgetItem(QIcon(makeThumbnail(path, info)), label);
+    auto* item = new QListWidgetItem(QIcon(QPixmap::fromImage(makeThumbnail(path, info, false))), label);
     item->setToolTip(name + "\n" + details.join('\n') + "\n\nDrag onto the timeline, or double-click to add it to the end");
     item->setData(MediaBin::PathRole, path);
     item->setData(MediaBin::DurationRole, info.duration_sec);
@@ -399,7 +471,23 @@ bool MainWindow::addMediaItem(const QString& path, QString* error)
     item->setData(MediaBin::HeightRole, info.height);
     item->setData(MediaBin::FpsRole, info.fps);
     m_mediaBin->addItem(item);
-    return true;
+
+    // Decoding a frame for the thumbnail takes a moment, so do it in the background
+    if (info.has_video) {
+        QPointer<MainWindow> self(this);
+        QThreadPool::globalInstance()->start([self, path, info] {
+            QImage thumb = makeThumbnail(path, info, true);
+            QMetaObject::invokeMethod(qApp, [self, path, thumb] {
+                if (!self)
+                    return;
+                QIcon icon(QPixmap::fromImage(thumb));
+                for (int i = 0; i < self->m_mediaBin->count(); ++i)
+                    if (self->m_mediaBin->item(i)->data(MediaBin::PathRole).toString() == path)
+                        self->m_mediaBin->item(i)->setIcon(icon);
+            });
+        });
+    }
+    return item;
 }
 
 // ---- Timeline & preview ----
@@ -620,6 +708,41 @@ void MainWindow::onPlayheadMoved(double sec)
     updateTimeLabel();
 }
 
+// ---- Getting around ----
+
+void MainWindow::seekTo(double sec)
+{
+    sec = std::clamp(sec, 0.0, std::max(0.0, m_timeline->duration()));
+    m_timeline->setPlayhead(sec);
+    onPlayheadMoved(sec);
+}
+
+void MainWindow::seekBy(double seconds)
+{
+    seekTo(m_timeline->playhead() + seconds);
+}
+
+void MainWindow::stepFrames(int frames)
+{
+    stopPlayback(); // stepping frame by frame only makes sense when paused
+    seekTo(m_timeline->playhead() + frames / project().fps);
+}
+
+void MainWindow::jumpToCut(int direction)
+{
+    const double here = m_timeline->playhead();
+    const QList<double> cuts = m_timeline->cutPoints();
+    if (direction > 0) {
+        for (double c : cuts)
+            if (c > here + 1e-3)
+                return seekTo(c);
+    } else {
+        for (auto it = cuts.rbegin(); it != cuts.rend(); ++it)
+            if (*it < here - 1e-3)
+                return seekTo(*it);
+    }
+}
+
 // ---- Playback ----
 
 void MainWindow::togglePlay()
@@ -829,6 +952,13 @@ void MainWindow::runDemo(const QStringList& paths, const QString& screenshotPath
     title.title.text = "MixMedia says hi";
     title.fadeIn = 0.5;
     m_timeline->updateClip(t, title, "demo");
+
+    // And some effects on the video, shown in the properties panel
+    TimelineClip video = m_timeline->clips().at(0);
+    video.look = 4; // vivid
+    video.vignette = 0.4f;
+    m_timeline->updateClip(0, video, "demoFx");
+    m_timeline->selectClip(0);
 
     // Let things load, play for 2 seconds, then take the picture
     // MIXMEDIA_DEMO_WAIT=ms adds extra time before playing (to let slow background work finish)

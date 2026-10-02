@@ -15,6 +15,7 @@
 class FilmstripCache;
 class WaveformCache;
 class QMimeData;
+class QScrollBar;
 
 class TimelineWidget : public QWidget {
     Q_OBJECT
@@ -36,11 +37,19 @@ public:
 
     // Drops clips onto the end of the right track (e.g. double-click in the media panel)
     void appendClips(const QList<TimelineClip>& clips);
+    // Drops clips as if they'd been dragged to `pos` (used for files dragged in from outside)
+    void dropClips(const QList<TimelineClip>& clips, const QPoint& pos);
+
+    // Where clips start and end, for jumping between cuts
+    QList<double> cutPoints() const;
 
     int selectedIndex() const { return m_selected; }
+    void selectClip(int index);
     // Swap in a changed version of a clip (from the properties panel). Edits with the same
     // `what` in quick succession (dragging a slider) become a single undo step.
     void updateClip(int index, const TimelineClip& clip, const QString& what);
+    // Changes how fast a clip plays, and slides everything after it along to make room
+    void setClipSpeed(int index, double speed);
 
 public slots:
     void splitAtPlayhead();
@@ -57,6 +66,7 @@ signals:
     void playheadMoved(double seconds); // you moved it by hand
     void clipsChanged();
     void selectionChanged(int index);
+    void filesDropped(const QStringList& files, const QPoint& pos);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -70,6 +80,7 @@ protected:
     void mouseReleaseEvent(QMouseEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
+    void contextMenuEvent(QContextMenuEvent* event) override;
 
 private:
     struct Track {
@@ -93,7 +104,9 @@ private:
     int pickTrack(int wanted, bool audioOnly) const;
     static double freeStart(const QList<TimelineClip>& clips, int track,
                             double start, double duration, int ignore = -1);
-    QList<TimelineClip> layoutDrop(const QMimeData* mime, const QPoint& pos) const;
+    QList<TimelineClip> layoutDrop(const QList<TimelineClip>& clips, const QPoint& pos) const;
+    static QList<TimelineClip> clipsFromMime(const QMimeData* mime);
+    static QStringList filesFromMime(const QMimeData* mime);
     double snapped(double sec, int ignore, double* moved = nullptr) const;
     double neighbourBefore(int clip) const;
     double neighbourAfter(int clip) const;
@@ -105,10 +118,12 @@ private:
     QList<int> partnersOf(int index) const; // itself + its detached sound (or the video it came from)
     void syncPartners();
     void changed();
+    void invalidate(); // something changed, redraw the timeline properly next time
     void select(int index);
 
     void clampScroll();
     void keepPlayheadVisible();
+    void syncScrollBar();
 
     void drawRuler(QPainter& p);
     void drawTracks(QPainter& p);
@@ -136,6 +151,10 @@ private:
 
     Drag m_drag = Drag::None;
     double m_grabOffset = 0.0; // where on the clip you grabbed it (seconds)
+
+    QScrollBar* m_scrollBar;
+    QPixmap m_cache; // the timeline minus the playhead
+    bool m_cacheDirty = true;
 
     FilmstripCache* m_filmstrip;
     WaveformCache* m_waveforms;

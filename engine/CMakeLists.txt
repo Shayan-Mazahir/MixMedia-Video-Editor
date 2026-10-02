@@ -11,6 +11,7 @@ add_library(ve_engine STATIC
     src/audio_reader.cpp
     src/engine.cpp
     src/exporter.cpp
+    src/effects.cpp
     src/ffmpeg_util.cpp
     src/stream_copy.cpp
     src/timeline.cpp

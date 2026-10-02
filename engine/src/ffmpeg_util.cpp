@@ -56,7 +56,13 @@ AVPixelFormat preferCard(AVCodecContext* ctx, const AVPixelFormat* offered)
 
 } // namespace
 
-int openDecoder(AVFormatContext* fmt, AVMediaType type, CodecPtr& out, AVBufferRef* hwDevice)
+bool isStillImage(const AVFormatContext* fmt)
+{
+    std::string name = fmt->iformat->name;
+    return name.find("image2") != std::string::npos || name.find("_pipe") != std::string::npos;
+}
+
+int openDecoder(AVFormatContext* fmt, AVMediaType type, CodecPtr& out, AVBufferRef* hwDevice, int threads)
 {
     const AVCodec* decoder = nullptr;
     int idx = av_find_best_stream(fmt, type, -1, -1, &decoder, 0);
@@ -67,7 +73,8 @@ int openDecoder(AVFormatContext* fmt, AVMediaType type, CodecPtr& out, AVBufferR
     if (!ctx || avcodec_parameters_to_context(ctx.get(), fmt->streams[idx]->codecpar) < 0)
         return -1;
 
-    ctx->thread_count = 0; // let FFmpeg pick, uses all cores
+    // 0 = one thread per core. Lovely for export, wasteful for a single picture.
+    ctx->thread_count = isStillImage(fmt) ? 1 : threads;
     ctx->pkt_timebase = fmt->streams[idx]->time_base;
     if (hwDevice && type == AVMEDIA_TYPE_VIDEO) {
         ctx->hw_device_ctx = av_buffer_ref(hwDevice);

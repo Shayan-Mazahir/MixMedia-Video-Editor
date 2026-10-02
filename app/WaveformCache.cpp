@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shayan Mazahir. Part of MixMedia Video Editor, see NOTICE.
 
 #include "WaveformCache.h"
+#include "ThreadName.h"
 
 #include <ve/engine.h>
 
@@ -37,6 +38,7 @@ QVector<float> WaveformCache::peaks(const QString& path)
 
 void WaveformCache::run()
 {
+    nameThisThread("mm-waveform");
     while (true) {
         QString path;
         {

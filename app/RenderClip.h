@@ -23,6 +23,10 @@ struct RenderClip {
     float volume = 1.0f;
     double fadeIn = 0.0;
     double fadeOut = 0.0;
+    double speed = 1.0;
+    float opacity = 1.0f, scale = 1.0f, posX = 0.0f, posY = 0.0f;
+    int look = 0;
+    float brightness = 0, contrast = 0, saturation = 0, temperature = 0, blur = 0, sharpen = 0, vignette = 0;
 };
 
 // Hands the clips to an engine timeline (the engine wants plain C strings, so we keep them alive here).
@@ -44,6 +48,19 @@ inline void applyClips(ve_timeline* tl, const QList<RenderClip>& clips)
         v.volume = c.volume;
         v.fade_in = c.fadeIn;
         v.fade_out = c.fadeOut;
+        v.speed = c.speed;
+        v.transparency = 1.0f - c.opacity;
+        v.size = c.scale;
+        v.pos_x = c.posX;
+        v.pos_y = c.posY;
+        v.look = c.look;
+        v.brightness = c.brightness;
+        v.contrast = c.contrast;
+        v.saturation = c.saturation;
+        v.temperature = c.temperature;
+        v.blur = c.blur;
+        v.sharpen = c.sharpen;
+        v.vignette = c.vignette;
         list.push_back(v);
     }
     ve_timeline_set_clips(tl, list.data(), int(list.size()));

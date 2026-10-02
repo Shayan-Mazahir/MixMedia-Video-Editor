@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <QCache>
 #include <QHash>
 #include <QImage>
 #include <QList>
@@ -41,7 +42,7 @@ private:
 
     std::mutex m_mutex;
     std::condition_variable m_wake;
-    QHash<QString, QImage> m_tiles;
+    QCache<QString, QImage> m_tiles; // forgets the least recently used tiles first
     QList<Request> m_todo;  // newest at the back, those get done first
     QHash<QString, bool> m_queued;
     bool m_quit = false;

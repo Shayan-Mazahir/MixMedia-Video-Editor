@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shayan Mazahir. Part of MixMedia Video Editor, see NOTICE.
 
 #include "FilmstripCache.h"
+#include "ThreadName.h"
 
 #include <ve/engine.h>
 
@@ -10,13 +11,15 @@
 namespace {
 constexpr int MaxTileWidth = FilmstripCache::TileHeight * 3;
 constexpr int MaxQueued = 96;     // older requests are probably scrolled away by now
-constexpr int MaxCached = 3000;   // ~50MB, plenty
+constexpr int MaxCachedKB = 40 * 1024; // ~40MB of tiles, then the oldest go
 }
 
 FilmstripCache::FilmstripCache(QObject* parent)
     : QObject(parent)
     , m_worker([this] { run(); })
 {
+    std::lock_guard lock(m_mutex);
+    m_tiles.setMaxCost(MaxCachedKB);
 }
 
 FilmstripCache::~FilmstripCache()
@@ -39,9 +42,8 @@ QImage FilmstripCache::tile(const QString& path, double sec)
     QString key = keyFor(path, sec);
     std::lock_guard lock(m_mutex);
 
-    auto it = m_tiles.constFind(key);
-    if (it != m_tiles.constEnd())
-        return *it;
+    if (const QImage* cached = m_tiles.object(key))
+        return *cached;
 
     if (!m_queued.contains(key)) {
         m_todo.append({ path, sec, key });
@@ -55,6 +57,7 @@ QImage FilmstripCache::tile(const QString& path, double sec)
 
 void FilmstripCache::run()
 {
+    nameThisThread("mm-filmstrip");
     std::unordered_map<std::string, ve_reader*> readers;
 
     while (true) {
@@ -77,20 +80,18 @@ void FilmstripCache::run()
             QImage buf(MaxTileWidth, TileHeight, QImage::Format_RGBA8888);
             int w = 0, h = 0;
             if (ve_reader_frame(reader, req.sec, 1, MaxTileWidth, TileHeight, buf.bits(), &w, &h) == VE_OK)
-                img = QImage(buf.bits(), w, h, w * 4, QImage::Format_RGBA8888).copy();
+                img = QImage(buf.bits(), w, h, w * 4, QImage::Format_RGBA8888).convertToFormat(QImage::Format_RGB888);
         }
 
         {
             std::lock_guard lock(m_mutex);
             m_queued.remove(req.key);
-            if (m_tiles.size() > MaxCached)
-                m_tiles.clear();
             // Store even a failed (null) one as a black tile so we don't keep retrying
             if (img.isNull()) {
                 img = QImage(16, 9, QImage::Format_RGBA8888);
                 img.fill(Qt::black);
             }
-            m_tiles.insert(req.key, img);
+            m_tiles.insert(req.key, new QImage(img), std::max<qsizetype>(1, img.sizeInBytes() / 1024));
         }
         emit tileReady();
     }

@@ -52,6 +52,11 @@ FormatPtr openInput(const char* path);
 
 // Opens a decoder for the best stream of the given type. Returns the stream index, or -1.
 // Give it a graphics card (hwDevice) and video gets decoded there if the card can handle it.
-int openDecoder(AVFormatContext* fmt, AVMediaType type, CodecPtr& out, AVBufferRef* hwDevice = nullptr);
+int openDecoder(AVFormatContext* fmt, AVMediaType type, CodecPtr& out, AVBufferRef* hwDevice = nullptr,
+                int threads = 0);
+
+// Is this file a still picture (PNG, JPEG...) rather than a video?
+bool isStillImage(const AVFormatContext* fmt);
+
 
 } // namespace ve

@@ -18,9 +18,10 @@ VideoReader::~VideoReader()
     av_buffer_unref(&m_hwDevice);
 }
 
-bool VideoReader::open(const std::string& path, AVBufferRef* hwDevice)
+bool VideoReader::open(const std::string& path, AVBufferRef* hwDevice, int threads)
 {
     m_path = path;
+    m_threads = threads;
     if (hwDevice != m_hwDevice) {
         av_buffer_unref(&m_hwDevice);
         m_hwDevice = hwDevice ? av_buffer_ref(hwDevice) : nullptr;
@@ -33,7 +34,7 @@ bool VideoReader::open(const std::string& path, AVBufferRef* hwDevice)
     if (!fmt)
         return false;
     CodecPtr ctx;
-    int idx = openDecoder(fmt.get(), AVMEDIA_TYPE_VIDEO, ctx, m_hwDevice);
+    int idx = openDecoder(fmt.get(), AVMEDIA_TYPE_VIDEO, ctx, m_hwDevice, m_threads);
     if (idx < 0)
         return false;
 
@@ -44,6 +45,7 @@ bool VideoReader::open(const std::string& path, AVBufferRef* hwDevice)
     if (rate.num > 0 && rate.den > 0)
         m_frameDuration = av_q2d(av_inv_q(rate));
 
+    m_still = isStillImage(fmt.get());
     m_fmt = std::move(fmt);
     m_ctx = std::move(ctx);
     m_stream = idx;
@@ -75,7 +77,7 @@ void VideoReader::seekTo(double sec)
     int64_t ts = m_startPts + static_cast<int64_t>(sec / av_q2d(m_timeBase));
     if (av_seek_frame(m_fmt.get(), m_stream, ts, AVSEEK_FLAG_BACKWARD) < 0) {
         // Some files (like still images) can't seek, so just start over
-        open(m_path, m_hwDevice);
+        open(m_path, m_hwDevice, m_threads);
         return;
     }
     avcodec_flush_buffers(m_ctx.get());
@@ -156,20 +158,21 @@ const int* sourceCoefficients(const AVFrame* f)
 }
 
 // Makes (or reuses) a converter from this frame to w x h in the given format
-SwsContext* converterFor(SwsPtr& sws, int (&cachedKey)[5], const AVFrame* f, int w, int h, AVPixelFormat to)
+SwsContext* converterFor(SwsPtr& sws, int (&cachedKey)[6], const AVFrame* f, int w, int h, AVPixelFormat to,
+                         bool fast = false)
 {
-    int key[5] = { f->width, f->height, f->format, w, h };
-    if (sws && std::equal(key, key + 5, cachedKey))
+    int key[6] = { f->width, f->height, f->format, w, h, to };
+    if (sws && std::equal(key, key + 6, cachedKey))
         return sws.get();
 
     sws.reset(sws_getContext(f->width, f->height, static_cast<AVPixelFormat>(f->format),
-                             w, h, to, SWS_BILINEAR, nullptr, nullptr, nullptr));
+                             w, h, to, fast ? SWS_FAST_BILINEAR : SWS_BILINEAR, nullptr, nullptr, nullptr));
     if (!sws)
         return nullptr;
-    std::copy(key, key + 5, cachedKey);
+    std::copy(key, key + 6, cachedKey);
 
     int srcFull = f->color_range == AVCOL_RANGE_JPEG;
-    if (to == AV_PIX_FMT_RGBA)
+    if (to == AV_PIX_FMT_RGBA || to == AV_PIX_FMT_BGRA)
         sws_setColorspaceDetails(sws.get(), sourceCoefficients(f), srcFull, sourceCoefficients(f), 1, 0, 1 << 16, 1 << 16);
     else // video out: HD colours, normal (limited) range
         sws_setColorspaceDetails(sws.get(), sourceCoefficients(f), srcFull, sws_getCoefficients(AVCOL_SPC_BT709), 0, 0, 1 << 16, 1 << 16);
@@ -189,12 +192,12 @@ const AVFrame* VideoReader::toMemory(const AVFrame* f)
     return m_inMemory.get();
 }
 
-bool VideoReader::scale(const AVFrame* f, int w, int h, uint8_t* dst, int dstStride)
+bool VideoReader::scale(const AVFrame* f, int w, int h, uint8_t* dst, int dstStride, bool bgra)
 {
     f = toMemory(f);
     if (!f)
         return false;
-    SwsContext* sws = converterFor(m_sws, m_swsKey, f, w, h, AV_PIX_FMT_RGBA);
+    SwsContext* sws = converterFor(m_sws, m_swsKey, f, w, h, bgra ? AV_PIX_FMT_BGRA : AV_PIX_FMT_RGBA, m_fastScaling);
     if (!sws)
         return false;
     uint8_t* planes[4] = { dst, nullptr, nullptr, nullptr };

@@ -124,7 +124,7 @@ int ve_thumbnail(const char* path, int max_w, int max_h,
         return VE_ERR_OPEN;
 
     ve::VideoReader reader;
-    if (!reader.open(path))
+    if (!reader.open(path, nullptr, 1))
         return VE_ERR_NO_STREAM;
 
     // Skip a little way in so we don't grab a black intro frame
@@ -161,7 +161,7 @@ ve_reader* ve_reader_open(const char* path)
     if (!path)
         return nullptr;
     auto* r = new ve_reader;
-    if (!r->reader.open(path)) {
+    if (!r->reader.open(path, nullptr, 1)) { // thumbnails only need one frame at a time, one thread is plenty
         delete r;
         return nullptr;
     }
@@ -192,6 +192,12 @@ void ve_timeline_destroy(ve_timeline* tl)
     delete tl;
 }
 
+void ve_timeline_use_preview_settings(ve_timeline* tl)
+{
+    if (tl)
+        tl->timeline.usePreviewSettings();
+}
+
 void ve_timeline_set_clips(ve_timeline* tl, const ve_clip* clips, int count)
 {
     if (!tl)
@@ -212,6 +218,19 @@ void ve_timeline_set_clips(ve_timeline* tl, const ve_clip* clips, int count)
         clip.volume = c.volume;
         clip.fadeIn = std::max(0.0, c.fade_in);
         clip.fadeOut = std::max(0.0, c.fade_out);
+        clip.speed = c.speed > 0 ? std::clamp(c.speed, 0.1, 10.0) : 1.0;
+        clip.opacity = std::clamp(1.0f - c.transparency, 0.0f, 1.0f);
+        clip.scale = c.size > 0 ? c.size : 1.0f;
+        clip.posX = c.pos_x;
+        clip.posY = c.pos_y;
+        clip.effects.look = (c.look > 0 && c.look < VE_LOOK_COUNT) ? ve::Look(c.look) : ve::Look::None;
+        clip.effects.brightness = c.brightness;
+        clip.effects.contrast = c.contrast;
+        clip.effects.saturation = c.saturation;
+        clip.effects.temperature = c.temperature;
+        clip.effects.blur = std::clamp(c.blur, 0.0f, 1.0f);
+        clip.effects.sharpen = std::clamp(c.sharpen, 0.0f, 1.0f);
+        clip.effects.vignette = std::clamp(c.vignette, 0.0f, 1.0f);
         list.push_back(std::move(clip));
     }
     tl->timeline.setClips(list);
@@ -227,6 +246,14 @@ int ve_timeline_render_video(ve_timeline* tl, double t, int w, int h, uint8_t* o
     if (!tl || w <= 0 || h <= 0 || !out_rgba)
         return VE_ERR_ARG;
     tl->timeline.renderVideo(t, w, h, out_rgba);
+    return VE_OK;
+}
+
+int ve_timeline_render_video_bgra(ve_timeline* tl, double t, int w, int h, uint8_t* out_bgra)
+{
+    if (!tl || w <= 0 || h <= 0 || !out_bgra)
+        return VE_ERR_ARG;
+    tl->timeline.renderVideo(t, w, h, out_bgra, true);
     return VE_OK;
 }
 

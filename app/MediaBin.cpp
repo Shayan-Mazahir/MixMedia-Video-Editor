@@ -6,6 +6,7 @@
 #include <QDataStream>
 #include <QFileInfo>
 #include <QMimeData>
+#include <QPainter>
 
 namespace {
 constexpr double StillImageSeconds = 5.0; // pictures have no length, so give them one
@@ -54,4 +55,16 @@ QMimeData* MediaBin::mimeData(const QList<QListWidgetItem*>& items) const
     auto* mime = new QMimeData;
     mime->setData(MimeType, data);
     return mime;
+}
+
+void MediaBin::paintEvent(QPaintEvent* event)
+{
+    QListWidget::paintEvent(event);
+    if (count() > 0)
+        return;
+    // Nothing imported yet? Say how to get started.
+    QPainter p(viewport());
+    p.setPen(QColor(0x80, 0x82, 0x86));
+    p.drawText(viewport()->rect().adjusted(16, 16, -16, -16), Qt::AlignCenter | Qt::TextWordWrap,
+               "Drag videos, music or pictures in here\n\nor press Import (Ctrl+I)");
 }

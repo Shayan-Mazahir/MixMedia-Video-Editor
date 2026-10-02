@@ -89,7 +89,37 @@ typedef struct ve_clip {
     float volume;    /* 1.0 = as is */
     double fade_in;  /* seconds to fade up from black/silence, 0 = none */
     double fade_out; /* seconds to fade away at the end */
+
+    /* Everything below is "0 = leave it alone", so a zeroed ve_clip is a plain clip. */
+    double speed;       /* 2 = twice as fast, 0.5 = slow motion (0 counts as 1) */
+    float transparency; /* 0 = solid, 1 = invisible */
+    float size;         /* picture-in-picture size, 1 = normal (0 counts as 1) */
+    float pos_x;        /* shift as a fraction of the frame, 0 = centred */
+    float pos_y;
+
+    int look;           /* one of VE_LOOK_* */
+    float brightness;   /* -1..1 */
+    float contrast;     /* -1..1 */
+    float saturation;   /* -1..1, -1 = grey */
+    float temperature;  /* -1..1, negative = cooler, positive = warmer */
+    float blur;         /*  0..1 */
+    float sharpen;      /*  0..1 */
+    float vignette;     /*  0..1 */
 } ve_clip;
+
+/* One-click looks */
+enum {
+    VE_LOOK_NONE = 0,
+    VE_LOOK_BLACK_AND_WHITE,
+    VE_LOOK_SEPIA,
+    VE_LOOK_VINTAGE,
+    VE_LOOK_VIVID,
+    VE_LOOK_COOL,
+    VE_LOOK_WARM,
+    VE_LOOK_FADED,
+    VE_LOOK_DRAMATIC,
+    VE_LOOK_COUNT
+};
 
 /* A timeline isn't thread safe - give each thread its own. */
 typedef struct ve_timeline ve_timeline;
@@ -97,11 +127,17 @@ typedef struct ve_timeline ve_timeline;
 ve_timeline* ve_timeline_create(void);
 void ve_timeline_destroy(ve_timeline* tl);
 
+/* For live preview: fewer decoder threads and quicker scaling. */
+void ve_timeline_use_preview_settings(ve_timeline* tl);
+
 void ve_timeline_set_clips(ve_timeline* tl, const ve_clip* clips, int count);
 double ve_timeline_duration(const ve_timeline* tl);
 
 /* Draws the frame at time t into a w x h RGBA buffer. */
 int ve_timeline_render_video(ve_timeline* tl, double t, int w, int h, uint8_t* out_rgba);
+
+/* Same, but B G R A byte order: what Qt's QImage::Format_RGB32 and most screens use. */
+int ve_timeline_render_video_bgra(ve_timeline* tl, double t, int w, int h, uint8_t* out_bgra);
 
 /* Mixes `frames` stereo samples starting at time t (out needs frames * 2 floats). */
 int ve_timeline_render_audio(ve_timeline* tl, double t, int frames, float* out);

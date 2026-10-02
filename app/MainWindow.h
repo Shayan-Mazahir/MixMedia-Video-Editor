@@ -14,6 +14,7 @@ class MediaBin;
 class PreviewRenderer;
 class PreviewWidget;
 class QLabel;
+class QListWidgetItem;
 class QToolButton;
 class QTimer;
 class TimelineWidget;
@@ -25,7 +26,7 @@ public:
     explicit MainWindow(QWidget* parent = nullptr);
     ~MainWindow() override;
 
-    void importFiles(const QStringList& paths, bool quiet = false);
+    QList<class QListWidgetItem*> importFiles(const QStringList& paths, bool quiet = false); // returns what got added
     void openFiles(const QStringList& paths); // projects get opened, media gets imported
     bool loadProject(const QString& path);
 
@@ -34,6 +35,8 @@ public:
 
 protected:
     void closeEvent(QCloseEvent* event) override;
+    void dragEnterEvent(QDragEnterEvent* event) override;
+    void dropEvent(QDropEvent* event) override;
 
 private slots:
     void importMedia();
@@ -44,6 +47,7 @@ private slots:
     void onPlayheadMoved(double sec);
     void onTick();
     void refreshInspector();
+    void onFilesDroppedOnTimeline(const QStringList& files, const QPoint& pos);
 
     void newProject();
     void openProject();
@@ -61,7 +65,7 @@ private:
     QWidget* buildMediaPanel();
     QWidget* buildPreviewPanel();
     void buildActions();
-    bool addMediaItem(const QString& path, QString* error);
+    QListWidgetItem* addMediaItem(const QString& path, QString* error);
 
     Project project() const;
     QList<RenderClip> renderClips(QSize titleSize) const;
@@ -69,6 +73,10 @@ private:
     void updateTimeLabel();
     void startPlayback();
     void stopPlayback();
+    void seekTo(double sec);
+    void seekBy(double seconds);
+    void stepFrames(int frames);
+    void jumpToCut(int direction); // -1 = previous, +1 = next
 
     bool maybeSave(); // false = the user cancelled
     void setDirty(bool dirty);

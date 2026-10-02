@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shayan Mazahir. Part of MixMedia Video Editor, see NOTICE.
 
 #include "PreviewRenderer.h"
+#include "ThreadName.h"
 
 PreviewRenderer::PreviewRenderer(QObject* parent)
     : QObject(parent)
@@ -44,7 +45,9 @@ void PreviewRenderer::request(double t, QSize size)
 
 void PreviewRenderer::run()
 {
+    nameThisThread("mm-preview");
     ve_timeline* tl = ve_timeline_create();
+    ve_timeline_use_preview_settings(tl);
 
     while (true) {
         double t;
@@ -65,8 +68,9 @@ void PreviewRenderer::run()
             m_hasRequest = false;
         }
 
-        QImage frame(size, QImage::Format_RGBA8888);
-        ve_timeline_render_video(tl, t, size.width(), size.height(), frame.bits());
+        // RGB32 is the screen's own format, so Qt can show it without converting every pixel
+        QImage frame(size, QImage::Format_RGB32);
+        ve_timeline_render_video_bgra(tl, t, size.width(), size.height(), frame.bits());
         emit frameReady(frame, t);
     }
 

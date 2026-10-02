@@ -4,11 +4,14 @@
 // Pretends to be a mouse and keyboard and makes sure the timeline edits do what they should.
 // Run with: QT_QPA_PLATFORM=offscreen ./build/tests/timeline_test
 
+#include "NumberSlider.h"
 #include "ProjectFile.h"
 #include "TimelineWidget.h"
 
 #include <QApplication>
+#include <QDoubleSpinBox>
 #include <QMouseEvent>
+#include <QSlider>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
@@ -357,6 +360,99 @@ private slots:
         drag(tl, { xAt(3.0), trackY(1) }, { xAt(5.0), trackY(1) });
         QVERIFY(clip(0).start > 1.5);
         QCOMPARE(clip(0).start, clip(1).start);
+    }
+
+    void speedChangesLengthAndSlidesTheRest()
+    {
+        tl->appendClips({ fakeVideo(10) }); // second clip at 10-20s
+        tl->setClipSpeed(0, 2.0);           // first clip twice as fast: 10s becomes 5s
+        QCOMPARE(clip(0).duration, 5.0);
+        QCOMPARE(clip(0).speed, 2.0);
+        QCOMPARE(clip(1).start, 5.0);       // the next one slid back to meet it
+        tl->undo();
+        QCOMPARE(clip(0).duration, 10.0);
+        QCOMPARE(clip(1).start, 10.0);
+
+        tl->setClipSpeed(0, 0.5);           // slow motion: 20s long, pushes the next clip later
+        QCOMPARE(clip(0).duration, 20.0);
+        QCOMPARE(clip(1).start, 20.0);
+    }
+
+    void splittingASpedUpClipKeepsTheRightBitOfTheFile()
+    {
+        tl->setClipSpeed(0, 2.0); // 0-5s on the timeline, covering 0-10s of the file
+        tl->setPlayhead(2.0);
+        tl->splitAtPlayhead();
+        QCOMPARE(clip(1).start, 2.0);
+        QCOMPARE(clip(1).in, 4.0);  // 2s in at double speed = 4s into the file
+        QCOMPARE(clip(1).duration, 3.0);
+        QCOMPARE(clip(1).speed, 2.0);
+    }
+
+    void trimmingASpedUpClipStopsAtTheEndOfTheFile()
+    {
+        tl->setClipSpeed(0, 2.0); // already uses the whole 10s file, in 5s
+        drag(tl, { xAt(5.0) - 2, trackY(1) }, { xAt(8.0), trackY(1) });
+        QVERIFY(qAbs(clip(0).duration - 5.0) < 1e-9); // can't stretch past the end of the file
+    }
+
+    void effectsSurviveSaveAndOpen()
+    {
+        TimelineClip c = clip(0);
+        c.look = 3;
+        c.brightness = 0.25f;
+        c.blur = 0.5f;
+        c.scale = 0.4f;
+        c.posX = 0.3f;
+        c.opacity = 0.8f;
+        tl->updateClip(0, c, "fx");
+        tl->setClipSpeed(0, 1.5);
+
+        QTemporaryDir dir;
+        QString file = dir.filePath("fx.mixmedia");
+        ProjectFile::Data out;
+        out.clips = tl->clips();
+        QString error;
+        QVERIFY(ProjectFile::save(file, out, &error));
+        ProjectFile::Data in;
+        QVERIFY(ProjectFile::load(file, &in, nullptr, &error));
+        const TimelineClip& r = in.clips[0];
+        QCOMPARE(r.look, 3);
+        QCOMPARE(r.brightness, 0.25f);
+        QCOMPARE(r.blur, 0.5f);
+        QCOMPARE(r.scale, 0.4f);
+        QCOMPARE(r.posX, 0.3f);
+        QCOMPARE(r.opacity, 0.8f);
+        QCOMPARE(r.speed, 1.5);
+
+        QList<RenderClip> rc = tl->renderClips();
+        QCOMPARE(rc[0].look, 3);
+        QCOMPARE(rc[0].speed, 1.5);
+    }
+
+    void numberSliderStaysInSync()
+    {
+        // Slider covers -100..100, but typing can go out to -200..200
+        NumberSlider s(-200, 200, -100, 100, 1, 0, " %");
+        QSignalSpy changed(&s, &NumberSlider::valueChanged);
+        auto* box = s.findChild<QDoubleSpinBox*>();
+        auto* slider = s.findChild<QSlider*>();
+
+        box->setValue(150.5); // typed, past the slider's end
+        QCOMPARE(s.value(), 150.5);
+        QCOMPARE(slider->value(), 1000); // slider just pins at its end (100.0 x 10 steps)
+        QCOMPARE(changed.count(), 1);
+
+        slider->setValue(-255); // dragged to -25.5
+        QCOMPARE(s.value(), -25.5);
+        QCOMPARE(changed.last().first().toDouble(), -25.5);
+
+        s.setValue(42.0); // set from code: no signal
+        QCOMPARE(changed.count(), 2);
+        QCOMPARE(slider->value(), 420);
+
+        QTest::mouseDClick(slider, Qt::LeftButton); // double-click resets
+        QCOMPARE(s.value(), 0.0);
     }
 
     void renderLayers()
