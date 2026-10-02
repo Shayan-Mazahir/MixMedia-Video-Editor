@@ -1,6 +1,11 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Shayan Mazahir. Part of MixMedia Video Editor, see NOTICE.
+
 #include "MainWindow.h"
 
 #include <QApplication>
+#include <QIcon>
+#include <QStandardPaths>
 #include <QPalette>
 #include <QStyleFactory>
 
@@ -39,6 +44,11 @@ int main(int argc, char** argv)
 {
     QApplication app(argc, argv);
     QApplication::setApplicationName("MixMedia Video Editor");
+    QApplication::setWindowIcon(QIcon(":/mixmedia.png"));
+    // Lets Linux desktops match the window to its icon, but only once it's installed
+    // (otherwise the desktop complains it can't find mixmedia.desktop)
+    if (!QStandardPaths::locate(QStandardPaths::ApplicationsLocation, "mixmedia.desktop").isEmpty())
+        QGuiApplication::setDesktopFileName("mixmedia");
     applyDarkTheme(app);
 
     // mixmedia [files...]            opens a project, or imports media

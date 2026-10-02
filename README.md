@@ -1,3 +1,5 @@
+<p align="center"><img src="Mix%20Media.png" alt="MixMedia logo" width="150"></p>
+
 # MixMedia Video Editor
 just a small project im working on since i hate editors not being friendly and not working on Linux
 
@@ -60,3 +62,14 @@ QT_QPA_PLATFORM=offscreen ctest --test-dir build
 ```
 
 There's also a little command-line tool for poking at the engine: `./build/tools/ve-cli` (see the top of `tools/ve_cli.cpp`).
+
+## Licence
+
+MixMedia Video Editor is made by **Shayan Mazahir** and is free and open source under the [GNU GPL v3](LICENSE) (or any later version).
+
+You're welcome to use it, change it and share it. If you share it or a modified version:
+
+- **keep it open source** under the same licence
+- **credit the original**: keep the [NOTICE](NOTICE) file and the copyright lines at the top of the source files, say it was originally made by Shayan Mazahir with a link back to this repo, and leave that credit on the app's About screen
+
+The release downloads include Qt (LGPL v3) and FFmpeg with x264 (GPL). See [NOTICE](NOTICE) for details.

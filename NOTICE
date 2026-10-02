@@ -1,0 +1,28 @@
+MixMedia Video Editor
+Copyright (C) 2026 Shayan Mazahir
+https://github.com/Shayan-Mazahir/MixMedia-Video-Editor
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. See the LICENSE file for the full text.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE.
+
+
+Credit (additional term under section 7(b) of the GPL)
+------------------------------------------------------
+If you share this program or a modified version of it, you must keep this
+NOTICE file and the copyright lines at the top of the source files, and say
+clearly that MixMedia Video Editor was originally made by Shayan Mazahir, with
+a link to the repository above. In a modified version, the program's "About"
+screen must keep showing that credit too.
+
+
+Built with
+----------
+- Qt (https://www.qt.io), used under the LGPL v3
+- FFmpeg (https://ffmpeg.org), used under the GPL, including x264 and other
+  GPL-licensed codecs in the release builds

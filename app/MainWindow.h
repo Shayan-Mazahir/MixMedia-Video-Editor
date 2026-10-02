@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Shayan Mazahir. Part of MixMedia Video Editor, see NOTICE.
+
 #pragma once
 
 #include "RenderClip.h"
@@ -46,6 +49,7 @@ private slots:
     void openProject();
     bool saveProject();
     bool saveProjectAs();
+    void showAbout();
 
 private:
     struct Project {

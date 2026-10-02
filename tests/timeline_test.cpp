@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Shayan Mazahir. Part of MixMedia Video Editor, see NOTICE.
+
 // Pretends to be a mouse and keyboard and makes sure the timeline edits do what they should.
 // Run with: QT_QPA_PLATFORM=offscreen ./build/tests/timeline_test
 

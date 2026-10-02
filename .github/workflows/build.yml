@@ -1,10 +1,16 @@
-# Builds MixMedia on Windows and Linux every time you push, runs the tests,
-# and saves a ready-to-run Windows zip (look under "Artifacts" on the run's page).
+# Builds MixMedia on Windows and Linux every time you push and runs the tests.
+# Each run keeps a Windows zip and a Linux AppImage (look under "Artifacts" on the run's page).
+#
+# Making a release: tag a version and push the tag, e.g.
+#   git tag v0.2.0 && git push origin v0.2.0
+# and both files get attached to a new release on the Releases page.
 
 name: Build
 
 on:
   push:
+    branches: ["**"]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch: # adds a "Run workflow" button on GitHub
 
@@ -15,7 +21,7 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # MSYS2 gives us the same GCC + Qt + FFmpeg setup we use on Linux
       - uses: msys2/setup-msys2@v2
@@ -50,12 +56,16 @@ jobs:
         run: ctest --test-dir build --output-on-failure
 
       - name: Bundle everything it needs
-        run: cmake --install build --prefix dist/MixMedia
+        run: cmake --install build --prefix MixMedia
 
-      - uses: actions/upload-artifact@v4
+      - name: Zip it up
+        shell: pwsh
+        run: Compress-Archive -Path MixMedia -DestinationPath MixMedia-Windows-x64.zip
+
+      - uses: actions/upload-artifact@v7
         with:
           name: MixMedia-Windows
-          path: dist/MixMedia
+          path: MixMedia-Windows-x64.zip
 
   linux:
     runs-on: ubuntu-latest
@@ -65,14 +75,60 @@ jobs:
       - name: Install tools
         run: |
           dnf install -y https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm
-          dnf install -y git gcc-c++ cmake ninja-build qt6-qtbase-devel qt6-qtmultimedia-devel ffmpeg-devel
+          dnf install -y git gcc-c++ cmake ninja-build file findutils \
+            qt6-qtbase-devel qt6-qtmultimedia-devel ffmpeg-devel
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
           cmake --build build
 
       - name: Test
         run: ctest --test-dir build --output-on-failure
+
+      # An AppImage is one file with the app and everything it needs inside
+      - name: Make the AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: 1 # containers can't mount AppImages, so unpack them instead
+          QMAKE: /usr/bin/qmake6
+          LDAI_OUTPUT: MixMedia-Linux-x86_64.AppImage
+        run: |
+          DESTDIR=AppDir cmake --install build
+          base=https://github.com/linuxdeploy
+          curl -fsSL -o linuxdeploy $base/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          curl -fsSL -o linuxdeploy-plugin-qt $base/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x linuxdeploy linuxdeploy-plugin-qt
+          ./linuxdeploy --appdir AppDir \
+            --executable AppDir/usr/bin/mixmedia \
+            --desktop-file packaging/mixmedia.desktop \
+            --icon-file packaging/mixmedia.png \
+            --plugin qt --output appimage
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: MixMedia-Linux
+          path: MixMedia-Linux-x86_64.AppImage
+
+  # Only for version tags: put both files on a new release
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: out
+          merge-multiple: true
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" out/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "MixMedia $GITHUB_REF_NAME" \
+            --generate-notes

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=MixMedia Video Editor
+GenericName=Video Editor
+Comment=A friendly video editor
+Exec=mixmedia %F
+Icon=mixmedia
+Terminal=false
+Categories=AudioVideo;Video;AudioVideoEditing;
+MimeType=video/mp4;video/quicktime;video/x-matroska;video/webm;
+Keywords=video;editor;cut;trim;export;

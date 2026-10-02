@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Shayan Mazahir. Part of MixMedia Video Editor, see NOTICE.
+
 /*
  * The engine's front door. Kept as plain C on purpose so Rust, C# or
  * whatever else we fancy later can talk to it too.
