@@ -17,7 +17,8 @@ public:
     bool isOpen() const { return m_fmt != nullptr; }
 
     // Fills `frames` stereo samples starting at `sec`. Anything we can't find is silence.
-    void read(double sec, int frames, float* out);
+    // Returns false if there was nothing there at all (past the end of the file).
+    bool read(double sec, int frames, float* out);
 
 private:
     void seekTo(double sec);

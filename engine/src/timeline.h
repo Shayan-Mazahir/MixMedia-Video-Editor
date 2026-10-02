@@ -3,6 +3,7 @@
 #include "audio_reader.h"
 #include "video_reader.h"
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <vector>
@@ -18,9 +19,22 @@ struct Clip {
     bool useVideo = true;
     bool useAudio = true;
     float volume = 1.0f;
+    double fadeIn = 0.0;  // seconds to fade up from nothing
+    double fadeOut = 0.0; // seconds to fade away at the end
 
     double end() const { return start + duration; }
     bool activeAt(double t) const { return t >= start && t < end(); }
+
+    // How "there" the clip is at time t: 0 = faded out completely, 1 = fully visible/audible
+    double envelope(double t) const
+    {
+        double e = 1.0;
+        if (fadeIn > 0)
+            e = std::min(e, (t - start) / fadeIn);
+        if (fadeOut > 0)
+            e = std::min(e, (end() - t) / fadeOut);
+        return std::clamp(e, 0.0, 1.0);
+    }
 };
 
 // Turns a list of clips into finished pictures and sound for any moment in time.
@@ -45,6 +59,10 @@ public:
     // straight in the encoder's YUV 4:2:0 format and skip the RGBA detour.
     // Returns false when it can't, and you should use renderVideo instead.
     bool renderVideoDirect(double t, int w, int h, AVFrame* out);
+
+    // Can this be exported instantly, by copying pieces of one file without re-encoding?
+    // If so fills in the file and the pieces, otherwise `why` says what's stopping it.
+    bool copyPlan(std::string& source, std::vector<struct CopySegment>& segments, std::string& why) const;
 
     // Mixes `frames` stereo samples starting at time t.
     void renderAudio(double t, int frames, float* out);

@@ -5,6 +5,7 @@
 //   ve-cli render <out.png> <w> <h> <sec> <clips...> a frame from a timeline
 //   ve-cli audio  <file> <sec> <len>                 how loud is it there?
 //   ve-cli bench  <file> <sec> <len>                 how fast can we play it back?
+//   ve-cli peaks  <file>                             waveform overview, timed
 //   ve-cli export <out.mp4> <w> <h> <fps> <clips...>
 //
 // <clips...> is groups of five: path start in duration layer
@@ -153,6 +154,25 @@ int bench(const char* path, double sec, double len)
     return 0;
 }
 
+int peaks(const char* path)
+{
+    ve_media_info info;
+    if (int rc = ve_probe(path, &info))
+        return fail("probe", rc);
+    const int perSecond = 50;
+    std::vector<float> out(size_t(info.duration_sec * perSecond) + 16);
+    auto t0 = std::chrono::steady_clock::now();
+    int n = ve_audio_peaks(path, perSecond, out.data(), int(out.size()));
+    double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    if (n < 0)
+        return fail("peaks", n);
+    float loudest = 0;
+    for (int i = 0; i < n; ++i)
+        loudest = std::max(loudest, out[size_t(i)]);
+    std::printf("%d peaks (%.1f s of sound) in %.2f s, loudest %.3f\n", n, double(n) / perSecond, secs, loudest);
+    return 0;
+}
+
 int exportVideo(const char* out, int w, int h, double fps, std::vector<ve_clip> clips)
 {
     ve_timeline* tl = ve_timeline_create();
@@ -165,6 +185,14 @@ int exportVideo(const char* out, int w, int h, double fps, std::vector<ve_clip> 
     s.fps = fps;
     s.crf = 20;
     s.force_software = std::getenv("VE_SOFTWARE") != nullptr; // VE_SOFTWARE=1 to skip the graphics card
+    s.copy_only = std::getenv("VE_COPY") != nullptr;             // VE_COPY=1 for an instant export
+    if (s.copy_only) {
+        char why[256];
+        if (!ve_timeline_can_copy(tl, why, sizeof why)) {
+            std::fprintf(stderr, "can't do an instant export: %s\n", why);
+            return 1;
+        }
+    }
 
     auto t0 = std::chrono::steady_clock::now();
     int rc = ve_export(tl, &s, [](double done, void*) {
@@ -198,6 +226,8 @@ int main(int argc, char** argv)
         return render(argv[2], std::atoi(argv[3]), std::atoi(argv[4]), std::atof(argv[5]), parseClips(argc, argv, 6));
     if (cmd == "audio" && argc == 5)
         return audio(argv[2], std::atof(argv[3]), std::atof(argv[4]));
+    if (cmd == "peaks" && argc == 3)
+        return peaks(argv[2]);
     if (cmd == "bench" && argc == 5)
         return bench(argv[2], std::atof(argv[3]), std::atof(argv[4]));
     if (cmd == "export" && argc >= 11)

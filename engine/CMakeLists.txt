@@ -12,6 +12,7 @@ add_library(ve_engine STATIC
     src/engine.cpp
     src/exporter.cpp
     src/ffmpeg_util.cpp
+    src/stream_copy.cpp
     src/timeline.cpp
     src/video_encoder.cpp
     src/video_reader.cpp
@@ -20,4 +21,3 @@ add_library(ve_engine STATIC
 target_include_directories(ve_engine PUBLIC include)
 target_link_libraries(ve_engine PRIVATE PkgConfig::FFMPEG)
 target_compile_definitions(ve_engine PRIVATE VE_VERSION="${PROJECT_VERSION}")
-target_compile_options(ve_engine PRIVATE -Wall -Wextra)

@@ -1,10 +1,35 @@
 #include "timeline.h"
+#include "stream_copy.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 
 namespace ve {
+
+namespace {
+
+// Does this frame have see-through bits (like a title picture)?
+bool hasAlpha(const AVFrame* f)
+{
+    const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(AVPixelFormat(f->format));
+    return desc && (desc->flags & AV_PIX_FMT_FLAG_ALPHA) && !(desc->flags & AV_PIX_FMT_FLAG_HWACCEL);
+}
+
+// Paints src over dst, respecting src's own see-through-ness and an overall opacity
+void blendRow(uint8_t* dst, const uint8_t* src, int pixels, double opacity)
+{
+    const int o = int(opacity * 256);
+    for (int i = 0; i < pixels; ++i, src += 4, dst += 4) {
+        int a = (src[3] * o) >> 8; // 0..255
+        if (a == 0)
+            continue;
+        for (int c = 0; c < 3; ++c)
+            dst[c] = uint8_t((src[c] * a + dst[c] * (255 - a)) / 255);
+    }
+}
+
+} // namespace
 
 Timeline::~Timeline()
 {
@@ -91,12 +116,12 @@ bool Timeline::renderVideoDirect(double t, int w, int h, AVFrame* out)
             return false; // stacked clips need the full treatment
         only = &s;
     }
-    if (!only)
-        return false;
+    if (!only || only->clip.envelope(t) < 1.0)
+        return false; // fading needs blending, that's the full treatment too
 
     VideoReader* reader = videoFor(*only);
     const AVFrame* frame = reader ? reader->frameAt(only->clip.in + (t - only->clip.start)) : nullptr;
-    if (!frame || frame->width <= 0 || frame->height <= 0)
+    if (!frame || frame->width <= 0 || frame->height <= 0 || hasAlpha(frame))
         return false;
 
     // Different shape would need black bars, so leave that to the normal path
@@ -144,15 +169,24 @@ void Timeline::renderVideo(double t, int w, int h, uint8_t* rgba)
         int x = (w - fw) / 2;
         int y = (h - fh) / 2;
 
-        if (fw == w && fh == h) {
+        // Solid and fully faded in? Paint it straight on. Otherwise mix it with what's underneath.
+        double opacity = s->clip.envelope(t);
+        bool solid = opacity >= 1.0 && !hasAlpha(frame);
+        if (solid && fw == w && fh == h) {
             reader->scale(frame, w, h, rgba, w * 4);
             continue;
         }
         m_scratch.resize(size_t(fw) * fh * 4);
         if (!reader->scale(frame, fw, fh, m_scratch.data(), fw * 4))
             continue;
-        for (int row = 0; row < fh; ++row)
-            std::memcpy(rgba + (size_t(y + row) * w + x) * 4, m_scratch.data() + size_t(row) * fw * 4, size_t(fw) * 4);
+        for (int row = 0; row < fh; ++row) {
+            uint8_t* dst = rgba + (size_t(y + row) * w + x) * 4;
+            const uint8_t* src = m_scratch.data() + size_t(row) * fw * 4;
+            if (solid)
+                std::memcpy(dst, src, size_t(fw) * 4);
+            else
+                blendRow(dst, src, fw, opacity);
+        }
     }
 }
 
@@ -179,13 +213,93 @@ void Timeline::renderAudio(double t, int frames, float* out)
         int n = to - from;
         m_mix.resize(size_t(n) * AudioChannels);
         reader->read(c.in + (t + double(from) / AudioRate - c.start), n, m_mix.data());
+        // Volume, with the fades worked out sample by sample so they're smooth
         float* dst = out + size_t(from) * AudioChannels;
-        for (size_t i = 0; i < m_mix.size(); ++i)
-            dst[i] += m_mix[i] * c.volume;
+        bool fading = c.fadeIn > 0 || c.fadeOut > 0;
+        for (int i = 0; i < n; ++i) {
+            float gain = c.volume;
+            if (fading)
+                gain *= float(c.envelope(t + double(from + i) / AudioRate));
+            dst[i * 2] += m_mix[i * 2] * gain;
+            dst[i * 2 + 1] += m_mix[i * 2 + 1] * gain;
+        }
     }
 
     for (int i = 0; i < frames * AudioChannels; ++i)
         out[i] = std::clamp(out[i], -1.0f, 1.0f);
+}
+
+} // namespace ve
+
+namespace ve {
+
+bool Timeline::copyPlan(std::string& source, std::vector<CopySegment>& segments, std::string& why) const
+{
+    source.clear();
+    segments.clear();
+    if (m_slots.empty()) {
+        why = "There's nothing on the timeline.";
+        return false;
+    }
+
+    // Line clips up into pieces. A video and its detached sound count as one piece.
+    struct Piece {
+        double start, in, duration;
+        bool video = false, audio = false;
+    };
+    std::vector<Piece> pieces;
+    constexpr double eps = 0.002;
+    for (const Slot& s : m_slots) {
+        const Clip& c = s.clip;
+        if (source.empty())
+            source = c.path;
+        else if (c.path != source) {
+            why = "Titles, pictures and clips from different files need a normal export.";
+            return false;
+        }
+        if (c.fadeIn > 0 || c.fadeOut > 0 || std::abs(c.volume - 1.0f) > 0.001f) {
+            why = "Fades and volume changes need a normal export.";
+            return false;
+        }
+        auto same = [&](const Piece& p) {
+            return std::abs(p.start - c.start) < eps && std::abs(p.in - c.in) < eps && std::abs(p.duration - c.duration) < eps;
+        };
+        auto it = std::find_if(pieces.begin(), pieces.end(), same);
+        if (it == pieces.end())
+            it = pieces.insert(pieces.end(), Piece { c.start, c.in, c.duration });
+        it->video |= c.useVideo;
+        it->audio |= c.useAudio;
+    }
+
+    // Is it actually a video (not a picture), and does it have sound?
+    FormatPtr fmt = openInput(source.c_str());
+    if (!fmt || av_find_best_stream(fmt.get(), AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0) < 0
+        || std::string(fmt->iformat->name).find("image") != std::string::npos
+        || std::string(fmt->iformat->name).find("_pipe") != std::string::npos) {
+        why = "Only video files can be exported instantly.";
+        return false;
+    }
+    bool sourceHasAudio = av_find_best_stream(fmt.get(), AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0) >= 0;
+
+    std::sort(pieces.begin(), pieces.end(), [](const Piece& a, const Piece& b) { return a.start < b.start; });
+    double expected = 0.0;
+    for (const Piece& p : pieces) {
+        if (p.start > expected + eps) {
+            why = "Gaps between clips need a normal export.";
+            return false;
+        }
+        if (p.start < expected - eps) {
+            why = "Overlapping clips need a normal export.";
+            return false;
+        }
+        if (!p.video || (sourceHasAudio && !p.audio)) {
+            why = "Clips with their picture or sound removed need a normal export.";
+            return false;
+        }
+        segments.push_back({ p.in, p.duration });
+        expected = p.start + p.duration;
+    }
+    return true;
 }
 
 } // namespace ve

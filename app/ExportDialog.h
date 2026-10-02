@@ -6,18 +6,21 @@
 class QCheckBox;
 class QComboBox;
 class QLineEdit;
+class QRadioButton;
 
 class ExportDialog : public QDialog {
     Q_OBJECT
 
 public:
-    ExportDialog(QSize projectSize, double projectFps, const QString& suggestedPath, QWidget* parent = nullptr);
+    ExportDialog(QSize projectSize, double projectFps, const QString& suggestedPath,
+                 bool canCopy, const QString& whyNotCopy, QWidget* parent = nullptr);
 
     QString path() const;
     QSize size() const;
     double fps() const;
     int crf() const;
     bool useGraphicsCard() const;
+    bool instant() const; // copy without re-encoding
 
 private:
     void browse();
@@ -29,4 +32,6 @@ private:
     QComboBox* m_frameRate;
     QComboBox* m_quality;
     QCheckBox* m_graphicsCard;
+    QRadioButton* m_instant;
+    QRadioButton* m_normal;
 };

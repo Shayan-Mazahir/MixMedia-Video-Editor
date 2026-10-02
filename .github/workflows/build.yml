@@ -1,0 +1,69 @@
+# Builds MixMedia on Windows and Linux every time you push, runs the tests,
+# and saves a ready-to-run Windows zip (look under "Artifacts" on the run's page).
+
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch: # adds a "Run workflow" button on GitHub
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      # MSYS2 gives us the same GCC + Qt + FFmpeg setup we use on Linux
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-qt6-base
+            mingw-w64-ucrt-x86_64-qt6-multimedia
+            mingw-w64-ucrt-x86_64-qt6-tools
+            mingw-w64-ucrt-x86_64-ffmpeg
+
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Bundle everything it needs
+        run: cmake --install build --prefix dist/MixMedia
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MixMedia-Windows
+          path: dist/MixMedia
+
+  linux:
+    runs-on: ubuntu-latest
+    # Fedora has new enough Qt and FFmpeg (with RPM Fusion for the full codecs)
+    container: fedora:latest
+    steps:
+      - name: Install tools
+        run: |
+          dnf install -y https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm
+          dnf install -y git gcc-c++ cmake ninja-build qt6-qtbase-devel qt6-qtmultimedia-devel ffmpeg-devel
+
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure

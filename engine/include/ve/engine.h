@@ -56,6 +56,13 @@ int ve_probe(const char* path, ve_media_info* out);
 int ve_thumbnail(const char* path, int max_w, int max_h,
                  uint8_t* out_rgba, int* out_w, int* out_h);
 
+/*
+ * A loudness overview, for drawing waveforms: the loudest bit (0..1) of each little slice
+ * of time, `per_second` slices per second. Writes up to max_peaks values and returns how
+ * many it wrote (or a negative VE_ERR). Reads the whole file, so call it off the main thread.
+ */
+int ve_audio_peaks(const char* path, int per_second, float* out, int max_peaks);
+
 /* A frame grabber that stays open, for when you need lots of frames from one file. */
 typedef struct ve_reader ve_reader;
 
@@ -77,6 +84,8 @@ typedef struct ve_clip {
     int use_video;
     int use_audio;
     float volume;    /* 1.0 = as is */
+    double fade_in;  /* seconds to fade up from black/silence, 0 = none */
+    double fade_out; /* seconds to fade away at the end */
 } ve_clip;
 
 /* A timeline isn't thread safe - give each thread its own. */
@@ -96,6 +105,13 @@ int ve_timeline_render_audio(ve_timeline* tl, double t, int frames, float* out);
 
 /* ---- Export ---- */
 
+/*
+ * Can this timeline be exported instantly (copied without re-encoding)? That works for
+ * straightforward cuts from a single video file. Returns 1 if so; otherwise 0, with the
+ * reason written into `why` (if given).
+ */
+int ve_timeline_can_copy(ve_timeline* tl, char* why, int why_size);
+
 typedef struct ve_export_settings {
     const char* path; /* e.g. "my video.mp4" */
     int width;
@@ -103,6 +119,8 @@ typedef struct ve_export_settings {
     double fps;
     int crf;          /* quality, 18 = great, 23 = fine, 28 = small file */
     int force_software; /* 1 = skip the graphics card and use the CPU */
+    int copy_only;      /* 1 = instant export: copy the video as-is, no re-encoding.
+                           Only works if ve_timeline_can_copy says so. Size/fps/crf are ignored. */
 
     char encoder_used[32]; /* filled in by ve_export, e.g. "h264_vaapi" or "libx264" */
 } ve_export_settings;

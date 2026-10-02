@@ -41,7 +41,7 @@ int main(int argc, char** argv)
     QApplication::setApplicationName("MixMedia Video Editor");
     applyDarkTheme(app);
 
-    // mixmedia [files...]            opens with those files imported
+    // mixmedia [files...]            opens a project, or imports media
     // mixmedia --demo out.png files  puts them on the timeline, screenshots, quits
     QStringList args = app.arguments().mid(1);
     QString demoShot;
@@ -57,7 +57,7 @@ int main(int argc, char** argv)
     if (!demoShot.isEmpty())
         window.runDemo(args, demoShot);
     else
-        window.importFiles(args);
+        window.openFiles(args);
 
     return app.exec();
 }

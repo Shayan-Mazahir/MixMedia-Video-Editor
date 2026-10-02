@@ -15,6 +15,11 @@ if(UNIX AND NOT APPLE)
 endif()
 qt_standard_project_setup()
 
+# Extra warnings, for compilers that understand GCC/Clang style flags
+if(NOT MSVC)
+    add_compile_options(-Wall -Wextra)
+endif()
+
 # engine/ = the video brains
 # app/    = the window you actually click around in
 # tools/  = little helpers for testing the engine from the terminal

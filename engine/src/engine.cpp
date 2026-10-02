@@ -1,7 +1,9 @@
 #include "ve/engine.h"
 
 #include "exporter.h"
+#include "stream_copy.h"
 #include "ffmpeg_util.h"
+#include "audio_reader.h"
 #include "timeline.h"
 #include "video_reader.h"
 
@@ -127,6 +129,30 @@ int ve_thumbnail(const char* path, int max_w, int max_h,
     return fitFrame(reader, reader.frameAt(at, true), max_w, max_h, out_rgba, out_w, out_h);
 }
 
+int ve_audio_peaks(const char* path, int per_second, float* out, int max_peaks)
+{
+    if (!path || per_second <= 0 || !out || max_peaks <= 0)
+        return VE_ERR_ARG;
+    ve::AudioReader reader;
+    if (!reader.open(path))
+        return VE_ERR_NO_STREAM;
+
+    // Read straight through in slices, keeping the loudest sample of each
+    const int slice = std::max(1, VE_AUDIO_RATE / per_second);
+    std::vector<float> buf(size_t(slice) * VE_AUDIO_CHANNELS);
+    int count = 0;
+    for (; count < max_peaks; ++count) {
+        double t = double(count) * slice / VE_AUDIO_RATE;
+        if (!reader.read(t, slice, buf.data()))
+            break; // end of the file
+        float peak = 0.0f;
+        for (float s : buf)
+            peak = std::max(peak, std::abs(s));
+        out[count] = std::min(peak, 1.0f);
+    }
+    return count;
+}
+
 ve_reader* ve_reader_open(const char* path)
 {
     if (!path)
@@ -181,6 +207,8 @@ void ve_timeline_set_clips(ve_timeline* tl, const ve_clip* clips, int count)
         clip.useVideo = c.use_video != 0;
         clip.useAudio = c.use_audio != 0;
         clip.volume = c.volume;
+        clip.fadeIn = std::max(0.0, c.fade_in);
+        clip.fadeOut = std::max(0.0, c.fade_out);
         list.push_back(std::move(clip));
     }
     tl->timeline.setClips(list);
@@ -207,11 +235,32 @@ int ve_timeline_render_audio(ve_timeline* tl, double t, int frames, float* out)
     return VE_OK;
 }
 
+int ve_timeline_can_copy(ve_timeline* tl, char* why, int why_size)
+{
+    if (!tl)
+        return 0;
+    std::string source, reason;
+    std::vector<ve::CopySegment> segments;
+    bool ok = tl->timeline.copyPlan(source, segments, reason);
+    if (why && why_size > 0)
+        copyName(why, size_t(why_size), reason.c_str());
+    return ok ? 1 : 0;
+}
+
 int ve_export(ve_timeline* tl, ve_export_settings* settings,
               ve_progress_fn progress, void* user)
 {
     if (!tl || !settings || !settings->path)
         return VE_ERR_ARG;
+
+    if (settings->copy_only) {
+        std::string source, why;
+        std::vector<ve::CopySegment> segments;
+        if (!tl->timeline.copyPlan(source, segments, why))
+            return VE_ERR_ARG;
+        copyName(settings->encoder_used, sizeof settings->encoder_used, "copy");
+        return ve::copyStreams(source, segments, settings->path, progress, user);
+    }
     ve::ExportSettings s;
     s.path = settings->path;
     s.width = settings->width;

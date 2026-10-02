@@ -103,11 +103,11 @@ bool AudioReader::decodeMore()
     }
 }
 
-void AudioReader::read(double sec, int frames, float* out)
+bool AudioReader::read(double sec, int frames, float* out)
 {
     std::memset(out, 0, sizeof(float) * frames * AudioChannels);
     if (!isOpen() || frames <= 0)
-        return;
+        return false;
 
     // Jumped somewhere else? Seek. Otherwise keep reading where we left off.
     if (!m_bufValid || sec < m_bufStart - 0.01 || sec > bufferEnd() + 0.25)
@@ -119,7 +119,7 @@ void AudioReader::read(double sec, int frames, float* out)
             break;
     }
     if (!m_bufValid)
-        return;
+        return false;
 
     int64_t offset = std::llround((sec - m_bufStart) * AudioRate);
     int64_t available = int64_t(m_buf.size() / AudioChannels);
@@ -137,6 +137,7 @@ void AudioReader::read(double sec, int frames, float* out)
         m_buf.erase(m_buf.begin(), m_buf.begin() + used * AudioChannels);
         m_bufStart += double(used) / AudioRate;
     }
+    return offset + frames > 0 && offset < available;
 }
 
 } // namespace ve

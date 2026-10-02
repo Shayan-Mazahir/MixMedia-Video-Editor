@@ -3,10 +3,14 @@
 #include "RenderClip.h"
 #include "TimelineClip.h"
 
+#include <QElapsedTimer>
 #include <QList>
 #include <QWidget>
 
+#include <functional>
+
 class FilmstripCache;
+class WaveformCache;
 class QMimeData;
 
 class TimelineWidget : public QWidget {
@@ -18,7 +22,10 @@ public:
     QSize sizeHint() const override;
 
     const QList<TimelineClip>& clips() const { return m_clips; }
-    QList<RenderClip> renderClips() const;
+    void setClips(const QList<TimelineClip>& clips); // e.g. opening a project (clears undo)
+
+    // What the engine needs. titleImage turns a title into the picture file to show.
+    QList<RenderClip> renderClips(const std::function<QString(const TimelineClip&)>& titleImage = {}) const;
     double duration() const;
 
     double playhead() const { return m_playhead; }
@@ -27,17 +34,26 @@ public:
     // Drops clips onto the end of the right track (e.g. double-click in the media panel)
     void appendClips(const QList<TimelineClip>& clips);
 
+    int selectedIndex() const { return m_selected; }
+    // Swap in a changed version of a clip (from the properties panel). Edits with the same
+    // `what` in quick succession (dragging a slider) become a single undo step.
+    void updateClip(int index, const TimelineClip& clip, const QString& what);
+
 public slots:
     void splitAtPlayhead();
-    void deleteSelected();
+    void deleteSelected(bool closeGap = true); // closing the gap = "ripple delete"
+    void deleteSelectedKeepGap();
     void undo();
     void redo();
     void zoomToFit();
     void zoomBy(double factor);
+    void detachAudio();
+    void addTitle();
 
 signals:
     void playheadMoved(double seconds); // you moved it by hand
     void clipsChanged();
+    void selectionChanged(int index);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -83,7 +99,10 @@ private:
     void dragMove(const QPoint& pos);
     void dragTrim(const QPoint& pos, bool left);
     void pushUndo(const QList<TimelineClip>& state);
+    QList<int> partnersOf(int index) const; // itself + its detached sound (or the video it came from)
+    void syncPartners();
     void changed();
+    void select(int index);
 
     void clampScroll();
     void keepPlayheadVisible();
@@ -92,9 +111,11 @@ private:
     void drawTracks(QPainter& p);
     void drawClip(QPainter& p, const TimelineClip& clip, bool selected, bool ghost);
     void drawFilmstrip(QPainter& p, const TimelineClip& clip, const QRectF& r);
+    void drawWaveform(QPainter& p, const TimelineClip& clip, const QRectF& r);
+    void drawFades(QPainter& p, const TimelineClip& clip, const QRectF& r);
     void drawPlayhead(QPainter& p);
 
-    QList<Track> m_tracks { { "Video 2", false }, { "Video 1", false }, { "Audio 1", true } };
+    QList<Track> m_tracks { { "Video 2", false }, { "Video 1", false }, { "Audio 1", true }, { "Audio 2", true } };
     QList<TimelineClip> m_clips;
     QList<TimelineClip> m_ghosts; // where a drop would land
     int m_selected = -1;
@@ -102,6 +123,9 @@ private:
     QList<QList<TimelineClip>> m_undo;
     QList<QList<TimelineClip>> m_redo;
     QList<TimelineClip> m_beforeDrag;
+    QList<int> m_dragPartners;
+    QString m_lastEdit;
+    QElapsedTimer m_lastEditClock;
 
     double m_pixelsPerSecond = 50.0;
     double m_scrollX = 0.0;
@@ -111,8 +135,9 @@ private:
     double m_grabOffset = 0.0; // where on the clip you grabbed it (seconds)
 
     FilmstripCache* m_filmstrip;
+    WaveformCache* m_waveforms;
 
     static constexpr int RulerHeight = 28;
-    static constexpr int TrackHeight = 64;
+    static constexpr int TrackHeight = 58;
     static constexpr int HeaderWidth = 90;
 };

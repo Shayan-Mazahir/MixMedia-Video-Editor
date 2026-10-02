@@ -10,6 +10,7 @@ extern "C" {
 }
 
 #include <memory>
+#include <string>
 
 namespace ve {
 
@@ -41,6 +42,9 @@ using SwsPtr = std::unique_ptr<SwsContext, SwsFreer>;
 using SwrPtr = std::unique_ptr<SwrContext, SwrFreer>;
 
 void quietLogs();
+
+// Deletes a file. The path is UTF-8, which also works on Windows (unlike std::remove).
+void deleteFile(const std::string& utf8Path);
 FormatPtr openInput(const char* path);
 
 // Opens a decoder for the best stream of the given type. Returns the stream index, or -1.

@@ -1,11 +1,19 @@
 #include "ffmpeg_util.h"
 
+#include <filesystem>
+
 namespace ve {
 
 void quietLogs()
 {
     // FFmpeg loves to chat in the terminal; only let it speak up for real errors.
     av_log_set_level(AV_LOG_ERROR);
+}
+
+void deleteFile(const std::string& utf8Path)
+{
+    std::error_code ignored;
+    std::filesystem::remove(std::filesystem::path(reinterpret_cast<const char8_t*>(utf8Path.c_str())), ignored);
 }
 
 FormatPtr openInput(const char* path)

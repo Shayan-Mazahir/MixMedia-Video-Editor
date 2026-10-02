@@ -315,7 +315,7 @@ int exportTimeline(Timeline& timeline, const ExportSettings& s, ProgressFn progr
             queue.stop();
             drawer.join();
             out.close();
-            std::remove(s.path.c_str()); // don't leave half a video lying around
+            deleteFile(s.path); // don't leave half a video lying around
             return VE_ERR_CANCELLED;
         }
     }

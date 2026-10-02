@@ -5,11 +5,15 @@
 #include "PreviewRenderer.h"
 #include "PreviewWidget.h"
 #include "TimelineWidget.h"
+#include "TitleRenderer.h"
+#include "ClipInspector.h"
+#include "ProjectFile.h"
 
 #include <ve/engine.h>
 
 #include <QAction>
 #include <QApplication>
+#include <QCloseEvent>
 #if defined(Q_OS_LINUX)
 #include <QDBusConnection>
 #include <QDBusMessage>
@@ -21,6 +25,8 @@
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMenu>
+#include <QMenuBar>
 #include <QMessageBox>
 #include <QPainter>
 #include <QProcess>
@@ -116,15 +122,17 @@ MainWindow::MainWindow(QWidget* parent)
     , m_audio(new AudioPlayer(this))
     , m_playTimer(new QTimer(this))
 {
-    setWindowTitle("MixMedia Video Editor");
-
     m_timeline = new TimelineWidget;
+    m_inspector = new ClipInspector;
+    m_inspector->setMinimumWidth(240);
 
     auto* top = new QSplitter(Qt::Horizontal);
     top->addWidget(buildMediaPanel());
     top->addWidget(buildPreviewPanel());
+    top->addWidget(m_inspector);
     top->setStretchFactor(0, 2);
-    top->setStretchFactor(1, 3);
+    top->setStretchFactor(1, 4);
+    top->setStretchFactor(2, 1);
 
     auto* main = new QSplitter(Qt::Vertical);
     main->addWidget(top);
@@ -133,9 +141,12 @@ MainWindow::MainWindow(QWidget* parent)
     main->setStretchFactor(1, 2);
     setCentralWidget(main);
 
-    buildToolbar();
+    buildActions();
 
     connect(m_timeline, &TimelineWidget::clipsChanged, this, &MainWindow::onClipsChanged);
+    connect(m_timeline, &TimelineWidget::selectionChanged, this, &MainWindow::refreshInspector);
+    connect(m_inspector, &ClipInspector::edited, m_timeline, &TimelineWidget::updateClip);
+    connect(m_inspector, &ClipInspector::detachAudioClicked, m_timeline, &TimelineWidget::detachAudio);
     connect(m_timeline, &TimelineWidget::playheadMoved, this, &MainWindow::onPlayheadMoved);
     connect(m_renderer, &PreviewRenderer::frameReady, m_preview, [this](const QImage& frame, double) {
         m_preview->setFrame(frame);
@@ -147,6 +158,7 @@ MainWindow::MainWindow(QWidget* parent)
     connect(m_playTimer, &QTimer::timeout, this, &MainWindow::onTick);
 
     updateTimeLabel();
+    updateWindowTitle();
     statusBar()->showMessage(QString("Engine v%1 · Ready").arg(ve_version()));
 }
 
@@ -157,14 +169,11 @@ MainWindow::~MainWindow()
 
 // ---- Building the window ----
 
-void MainWindow::buildToolbar()
+void MainWindow::buildActions()
 {
-    QToolBar* bar = addToolBar("Main");
-    bar->setMovable(false);
-    bar->setToolButtonStyle(Qt::ToolButtonTextOnly);
-
-    auto add = [&](const QString& text, const QList<QKeySequence>& keys, const QString& tip, auto slot) {
-        QAction* a = bar->addAction(text);
+    // Each action lives in both the menu bar and (some of them) the toolbar
+    auto make = [&](const QString& text, const QList<QKeySequence>& keys, const QString& tip, auto slot) {
+        auto* a = new QAction(text, this);
         a->setShortcuts(keys);
         QString keysText = keys.isEmpty() ? QString() : QString(" (%1)").arg(keys.first().toString(QKeySequence::NativeText));
         a->setToolTip(tip + keysText);
@@ -172,23 +181,61 @@ void MainWindow::buildToolbar()
         return a;
     };
 
-    add("Import", { QKeySequence("Ctrl+I") }, "Import media", &MainWindow::importMedia);
+    QAction* newProject = make("&New project", { QKeySequence::New }, "Start a fresh project", &MainWindow::newProject);
+    QAction* open = make("&Open project…", { QKeySequence::Open }, "Open a saved project", &MainWindow::openProject);
+    QAction* save = make("&Save project", { QKeySequence::Save }, "Save the project", &MainWindow::saveProject);
+    QAction* saveAs = make("Save project &as…", { QKeySequence("Ctrl+Shift+S") }, "Save the project somewhere new", &MainWindow::saveProjectAs);
+    QAction* import = make("&Import media…", { QKeySequence("Ctrl+I") }, "Import media", &MainWindow::importMedia);
+    QAction* exportAction = make("&Export…", { QKeySequence("Ctrl+E") }, "Export to MP4", &MainWindow::exportVideo);
+    QAction* quit = make("&Quit", { QKeySequence::Quit }, "Quit", &QWidget::close);
+
+    QAction* undo = make("&Undo", { QKeySequence::Undo }, "Undo", [this] { m_timeline->undo(); });
+    QAction* redo = make("&Redo", { QKeySequence("Ctrl+Shift+Z"), QKeySequence("Ctrl+Y") }, "Redo", [this] { m_timeline->redo(); });
+    QAction* split = make("S&plit", { QKeySequence("S"), QKeySequence("Ctrl+B") }, "Split at the playhead", [this] { m_timeline->splitAtPlayhead(); });
+    QAction* del = make("&Delete", {}, "Delete the selected clip and close the gap (Delete key)", [this] { m_timeline->deleteSelected(); });
+    QAction* delGap = make("Delete, &leaving a gap", {}, "Delete the selected clip but leave the space empty (Shift+Delete)", [this] { m_timeline->deleteSelectedKeepGap(); });
+    QAction* detach = make("Detach &audio", { QKeySequence("Ctrl+D") }, "Put the selected clip's sound on its own track", [this] { m_timeline->detachAudio(); });
+    QAction* title = make("Add &title", { QKeySequence("Ctrl+T") }, "Add a title at the playhead", [this] { m_timeline->addTitle(); });
+
+    QAction* zoomOut = make("Zoom −", { QKeySequence("Ctrl+-") }, "Zoom out", [this] { m_timeline->zoomBy(0.8); });
+    QAction* zoomIn = make("Zoom +", { QKeySequence("Ctrl+=") }, "Zoom in", [this] { m_timeline->zoomBy(1.25); });
+    QAction* fit = make("Fit", { QKeySequence("Ctrl+0") }, "Fit the whole timeline", [this] { m_timeline->zoomToFit(); });
+
+    QMenu* file = menuBar()->addMenu("&File");
+    file->addActions({ newProject, open, save, saveAs });
+    file->addSeparator();
+    file->addActions({ import, exportAction });
+    file->addSeparator();
+    file->addAction(quit);
+    QMenu* edit = menuBar()->addMenu("&Edit");
+    edit->addActions({ undo, redo });
+    edit->addSeparator();
+    edit->addActions({ split, del, delGap, detach, title });
+    QMenu* view = menuBar()->addMenu("&View");
+    view->addActions({ zoomIn, zoomOut, fit });
+
+    QToolBar* bar = addToolBar("Main");
+    bar->setMovable(false);
+    bar->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    bar->addAction(import);
     bar->addSeparator();
-    add("Undo", { QKeySequence::Undo }, "Undo", [this] { m_timeline->undo(); });
-    add("Redo", { QKeySequence("Ctrl+Shift+Z"), QKeySequence("Ctrl+Y") }, "Redo", [this] { m_timeline->redo(); });
+    bar->addActions({ undo, redo });
     bar->addSeparator();
-    add("Split", { QKeySequence("S"), QKeySequence("Ctrl+B") }, "Split at the playhead", [this] { m_timeline->splitAtPlayhead(); });
-    add("Delete", {}, "Delete the selected clip (Delete key)", [this] { m_timeline->deleteSelected(); });
+    bar->addActions({ split, del, detach, title });
     bar->addSeparator();
-    add("Zoom −", { QKeySequence("Ctrl+-") }, "Zoom out", [this] { m_timeline->zoomBy(0.8); });
-    add("Zoom +", { QKeySequence("Ctrl+=") }, "Zoom in", [this] { m_timeline->zoomBy(1.25); });
-    add("Fit", { QKeySequence("Ctrl+0") }, "Fit the whole timeline", [this] { m_timeline->zoomToFit(); });
+    bar->addActions({ zoomOut, zoomIn, fit });
+    // Toolbar buttons can use shorter names than the menu
+    split->setIconText("Split");
+    del->setIconText("Delete");
+    detach->setIconText("Detach audio");
+    title->setIconText("Title");
+    import->setIconText("Import");
+    exportAction->setIconText("Export");
 
     auto* spacer = new QWidget;
     spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     bar->addWidget(spacer);
-
-    QAction* exportAction = add("Export", { QKeySequence("Ctrl+E") }, "Export to MP4", &MainWindow::exportVideo);
+    bar->addAction(exportAction);
     if (auto* button = qobject_cast<QToolButton*>(bar->widgetForAction(exportAction)))
         button->setStyleSheet("QToolButton { background: #2fc6b4; color: black; font-weight: bold;"
                               " padding: 4px 14px; border-radius: 4px; }");
@@ -278,7 +325,7 @@ void MainWindow::importMedia()
     importFiles(paths);
 }
 
-void MainWindow::importFiles(const QStringList& paths)
+void MainWindow::importFiles(const QStringList& paths, bool quiet)
 {
     if (paths.isEmpty())
         return;
@@ -293,9 +340,24 @@ void MainWindow::importFiles(const QStringList& paths)
             failures << QString("%1 — %2").arg(QFileInfo(path).fileName(), error);
     }
 
+    if (added > 0)
+        setDirty(true);
     statusBar()->showMessage(QString("Imported %1 file(s)").arg(added), 5000);
-    if (!failures.isEmpty())
+    if (!failures.isEmpty() && !quiet)
         QMessageBox::warning(this, "Some files didn't import", failures.join('\n'));
+}
+
+void MainWindow::openFiles(const QStringList& paths)
+{
+    // A project file opens as a project, anything else gets imported
+    QStringList media;
+    for (const QString& path : paths) {
+        if (path.endsWith(QString(".") + ProjectFile::Extension, Qt::CaseInsensitive))
+            loadProject(path);
+        else
+            media << path;
+    }
+    importFiles(media);
 }
 
 bool MainWindow::addMediaItem(const QString& path, QString* error)
@@ -354,18 +416,175 @@ MainWindow::Project MainWindow::project() const
     return p;
 }
 
+QList<RenderClip> MainWindow::renderClips(QSize titleSize) const
+{
+    // Titles become see-through pictures made at the size they'll be shown at
+    return m_timeline->renderClips([titleSize](const TimelineClip& c) {
+        return TitleRenderer::imageFile(c.title, titleSize);
+    });
+}
+
 void MainWindow::onClipsChanged()
 {
-    QList<RenderClip> clips = m_timeline->renderClips();
+    Project p = project();
+    QList<RenderClip> clips = renderClips(QSize(p.width, p.height));
     m_renderer->setClips(clips);
     m_audio->setClips(clips);
 
-    Project p = project();
     m_preview->setAspect(double(p.width) / p.height);
     if (m_timeline->clips().isEmpty())
         m_preview->setFrame({});
     requestPreview();
     updateTimeLabel();
+    refreshInspector();
+    setDirty(true);
+}
+
+void MainWindow::refreshInspector()
+{
+    int i = m_timeline->selectedIndex();
+    if (i >= 0 && i < m_timeline->clips().size())
+        m_inspector->showClip(i, m_timeline->clips().at(i));
+    else
+        m_inspector->showClip(-1, {});
+}
+
+// ---- Projects ----
+
+void MainWindow::setDirty(bool dirty)
+{
+    if (m_loadingProject)
+        return;
+    m_dirty = dirty;
+    updateWindowTitle();
+}
+
+void MainWindow::updateWindowTitle()
+{
+    QString name = m_projectPath.isEmpty() ? QStringLiteral("Untitled") : QFileInfo(m_projectPath).completeBaseName();
+    setWindowTitle(QString("%1%2 — MixMedia Video Editor").arg(name, m_dirty ? "*" : ""));
+}
+
+bool MainWindow::maybeSave()
+{
+    if (!m_dirty || m_timeline->clips().isEmpty())
+        return true;
+    auto answer = QMessageBox::question(this, "Save changes?",
+                                        "You've got unsaved changes. Save them first?",
+                                        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
+    if (answer == QMessageBox::Save)
+        return saveProject();
+    return answer == QMessageBox::Discard;
+}
+
+void MainWindow::closeEvent(QCloseEvent* event)
+{
+    if (maybeSave())
+        event->accept();
+    else
+        event->ignore();
+}
+
+void MainWindow::newProject()
+{
+    if (!maybeSave())
+        return;
+    stopPlayback();
+    m_loadingProject = true;
+    m_mediaBin->clear();
+    m_timeline->setClips({});
+    m_timeline->setPlayhead(0);
+    m_loadingProject = false;
+    m_projectPath.clear();
+    setDirty(false);
+}
+
+void MainWindow::openProject()
+{
+    if (!maybeSave())
+        return;
+    QString path = QFileDialog::getOpenFileName(this, "Open project", projectFolder(),
+                                                QString("MixMedia projects (*.%1)").arg(ProjectFile::Extension));
+    if (!path.isEmpty())
+        loadProject(path);
+}
+
+bool MainWindow::loadProject(const QString& path)
+{
+    ProjectFile::Data data;
+    QStringList missing;
+    QString error;
+    if (!ProjectFile::load(path, &data, &missing, &error)) {
+        QMessageBox::warning(this, "Couldn't open project", error);
+        return false;
+    }
+
+    stopPlayback();
+    m_loadingProject = true;
+    m_mediaBin->clear();
+    importFiles(data.media, /*quiet*/ true);
+
+    // Thumbnails aren't saved, so borrow them from the media panel
+    QHash<QString, QPixmap> thumbs;
+    for (int i = 0; i < m_mediaBin->count(); ++i)
+        thumbs.insert(m_mediaBin->item(i)->data(MediaBin::PathRole).toString(), m_mediaBin->item(i)->icon().pixmap(m_mediaBin->iconSize()));
+    for (TimelineClip& c : data.clips)
+        c.thumb = thumbs.value(c.path);
+
+    m_timeline->setClips(data.clips);
+    m_timeline->setPlayhead(data.playhead);
+    onPlayheadMoved(data.playhead);
+    m_loadingProject = false;
+
+    m_projectPath = path;
+    setDirty(false);
+    if (!missing.isEmpty())
+        QMessageBox::warning(this, "Some files are missing",
+                             "These files couldn't be found, so their clips will show up black:\n\n" + missing.join('\n'));
+    statusBar()->showMessage("Opened " + QFileInfo(path).fileName(), 5000);
+    return true;
+}
+
+bool MainWindow::saveProject()
+{
+    if (m_projectPath.isEmpty())
+        return saveProjectAs();
+
+    ProjectFile::Data data;
+    for (int i = 0; i < m_mediaBin->count(); ++i)
+        data.media << m_mediaBin->item(i)->data(MediaBin::PathRole).toString();
+    data.clips = m_timeline->clips();
+    data.playhead = m_timeline->playhead();
+
+    QString error;
+    if (!ProjectFile::save(m_projectPath, data, &error)) {
+        QMessageBox::warning(this, "Couldn't save", error);
+        return false;
+    }
+    setDirty(false);
+    statusBar()->showMessage("Saved " + QFileInfo(m_projectPath).fileName(), 4000);
+    return true;
+}
+
+bool MainWindow::saveProjectAs()
+{
+    QString suggested = m_projectPath.isEmpty() ? QDir(projectFolder()).filePath("My Project.mixmedia") : m_projectPath;
+    QString path = QFileDialog::getSaveFileName(this, "Save project", suggested,
+                                                QString("MixMedia projects (*.%1)").arg(ProjectFile::Extension));
+    if (path.isEmpty())
+        return false;
+    if (!path.endsWith(QString(".") + ProjectFile::Extension))
+        path += QString(".") + ProjectFile::Extension;
+    m_projectPath = path;
+    return saveProject();
+}
+
+QString MainWindow::projectFolder() const
+{
+    if (!m_projectPath.isEmpty())
+        return QFileInfo(m_projectPath).absolutePath();
+    QString docs = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    return docs.isEmpty() ? QDir::homePath() : docs;
 }
 
 void MainWindow::requestPreview()
@@ -468,7 +687,14 @@ void MainWindow::exportVideo()
         folder = QDir::homePath();
     QString suggested = QDir(folder).filePath("My Video.mp4");
 
-    ExportDialog dialog(QSize(p.width, p.height), p.fps, suggested, this);
+    // Ask the engine whether this edit can be copied straight across (instant export)
+    char why[256] = {};
+    ve_timeline* check = ve_timeline_create();
+    applyClips(check, renderClips(QSize(p.width, p.height)));
+    bool canCopy = ve_timeline_can_copy(check, why, sizeof why) != 0;
+    ve_timeline_destroy(check);
+
+    ExportDialog dialog(QSize(p.width, p.height), p.fps, suggested, canCopy, QString::fromUtf8(why), this);
     if (dialog.exec() != QDialog::Accepted || dialog.path().isEmpty())
         return;
 
@@ -480,7 +706,7 @@ void MainWindow::exportVideo()
         QString encoder;
     };
     auto job = std::make_shared<Job>();
-    QList<RenderClip> clips = m_timeline->renderClips();
+    QList<RenderClip> clips = renderClips(dialog.size()); // titles drawn sharp at the export size
     QByteArray path = dialog.path().toUtf8();
     ve_export_settings settings {};
     settings.width = dialog.size().width();
@@ -488,6 +714,7 @@ void MainWindow::exportVideo()
     settings.fps = dialog.fps();
     settings.crf = dialog.crf();
     settings.force_software = dialog.useGraphicsCard() ? 0 : 1;
+    settings.copy_only = dialog.instant() ? 1 : 0;
 
     QThread* worker = QThread::create([job, clips, path, settings]() mutable {
         settings.path = path.constData();
@@ -537,7 +764,9 @@ void MainWindow::exportVideo()
                         QString("Saved %1\n(took %2, using %3)")
                             .arg(QFileInfo(dialog.path()).fileName(),
                                  formatDuration(clock.elapsed() / 1000.0),
-                                 job->encoder == "libx264" ? QStringLiteral("the CPU") : QStringLiteral("the graphics card")),
+                                 job->encoder == "copy"      ? QStringLiteral("instant copy")
+                                 : job->encoder == "libx264" ? QStringLiteral("the CPU")
+                                                             : QStringLiteral("the graphics card")),
                         QMessageBox::Ok, this);
         QPushButton* show = box.addButton("Show in folder", QMessageBox::ActionRole);
         box.exec();
@@ -557,20 +786,32 @@ void MainWindow::runDemo(const QStringList& paths, const QString& screenshotPath
     for (int i = 0; i < m_mediaBin->count(); ++i)
         clips << m_mediaBin->clipFor(m_mediaBin->item(i));
     m_timeline->appendClips(clips);
+    m_timeline->detachAudio();
     m_timeline->setPlayhead(m_timeline->duration() * 0.4);
     onPlayheadMoved(m_timeline->playhead());
 
+    // Show off a title too, with a little fade in
+    m_timeline->addTitle();
+    int t = m_timeline->selectedIndex();
+    TimelineClip title = m_timeline->clips().at(t);
+    title.title.text = "MixMedia says hi";
+    title.fadeIn = 0.5;
+    m_timeline->updateClip(t, title, "demo");
+
     // Let things load, play for 2 seconds, then take the picture
-    QTimer::singleShot(1500, this, [this] {
+    // MIXMEDIA_DEMO_WAIT=ms adds extra time before playing (to let slow background work finish)
+    int wait = qEnvironmentVariableIntValue("MIXMEDIA_DEMO_WAIT");
+    QTimer::singleShot(1500 + wait, this, [this] {
         qInfo("demo: playing from %.3f", m_timeline->playhead());
         startPlayback();
     });
-    QTimer::singleShot(3500, this, [this, screenshotPath] {
+    QTimer::singleShot(3500 + wait, this, [this, screenshotPath] {
         stopPlayback();
         qInfo("demo: stopped at %.3f", m_timeline->playhead());
     });
-    QTimer::singleShot(4000, this, [this, screenshotPath] {
+    QTimer::singleShot(4000 + wait, this, [this, screenshotPath] {
         grab().save(screenshotPath);
+        m_dirty = false; // it's only a demo, don't ask to save on the way out
         qApp->quit();
     });
 }
