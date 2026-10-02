@@ -92,6 +92,7 @@ jobs:
       - name: Make the AppImage
         env:
           APPIMAGE_EXTRACT_AND_RUN: 1 # containers can't mount AppImages, so unpack them instead
+          NO_STRIP: 1 # linuxdeploy's own strip is older than Fedora's libraries and chokes on them
           QMAKE: /usr/bin/qmake6
           LDAI_OUTPUT: MixMedia-Linux-x86_64.AppImage
         run: |
