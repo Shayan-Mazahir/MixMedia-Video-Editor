@@ -219,9 +219,20 @@ typedef struct ve_export_settings {
     int force_software; /* 1 = skip the graphics card and use the CPU */
     int copy_only;      /* 1 = instant export: copy the video as-is, no re-encoding.
                            Only works if ve_timeline_can_copy says so. Size/fps/crf are ignored. */
+    int format;         /* one of VE_FORMAT_* (0 = MP4) */
 
     char encoder_used[32]; /* filled in by ve_export, e.g. "h264_vaapi" or "libx264" */
 } ve_export_settings;
+
+enum {
+    VE_FORMAT_MP4 = 0, /* H.264 video + AAC sound */
+    VE_FORMAT_GIF,     /* animated, no sound */
+    VE_FORMAT_MP3,     /* sound only */
+    VE_FORMAT_M4A      /* sound only (AAC) */
+};
+
+/* 1 if this build can export to that format (MP3 needs FFmpeg built with LAME) */
+int ve_export_format_available(int format);
 
 /* Gets called as the export goes (done goes 0 -> 1). Return non-zero to cancel. */
 typedef int (*ve_progress_fn)(double done, void* user);

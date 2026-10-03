@@ -44,6 +44,7 @@ int main(int argc, char** argv)
 {
     QApplication app(argc, argv);
     QApplication::setApplicationName("MixMedia Video Editor");
+    QApplication::setOrganizationName("MixMedia"); // where settings and auto-saves live
     QApplication::setWindowIcon(QIcon(":/mixmedia.png"));
     // Lets Linux desktops match the window to its icon, but only once it's installed
     // (otherwise the desktop complains it can't find mixmedia.desktop)
@@ -66,8 +67,10 @@ int main(int argc, char** argv)
 
     if (!demoShot.isEmpty())
         window.runDemo(args, demoShot);
-    else
+    else {
+        window.offerRecovery();
         window.openFiles(args);
+    }
 
     return app.exec();
 }

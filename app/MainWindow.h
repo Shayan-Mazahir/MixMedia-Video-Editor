@@ -3,10 +3,15 @@
 
 #pragma once
 
+#include "ProjectFile.h"
 #include "RenderClip.h"
 
 #include <QElapsedTimer>
 #include <QMainWindow>
+
+#include <memory>
+
+class QLockFile;
 
 class AudioPlayer;
 class ClipInspector;
@@ -29,6 +34,9 @@ public:
     QList<class QListWidgetItem*> importFiles(const QStringList& paths, bool quiet = false); // returns what got added
     void openFiles(const QStringList& paths); // projects get opened, media gets imported
     bool loadProject(const QString& path);
+
+    // Crashed last time? Offers to bring back what was auto-saved. Call once at startup.
+    void offerRecovery();
 
     // For testing: load files, put them on the timeline, then save a screenshot and quit
     void runDemo(const QStringList& paths, const QString& screenshotPath);
@@ -79,6 +87,13 @@ private:
     void jumpToCut(int direction); // -1 = previous, +1 = next
 
     bool maybeSave(); // false = the user cancelled
+    ProjectFile::Data projectData() const;
+
+    // Auto-save: a copy of unsaved work every minute, in our own folder (your project file is
+    // only ever written when you save). It's deleted again when you save or close normally.
+    static QString autoSaveFolder();
+    void autoSave();
+    void clearAutoSave();
     void setDirty(bool dirty);
     void updateWindowTitle();
     QString projectFolder() const;
@@ -101,4 +116,8 @@ private:
     QString m_projectPath;
     bool m_dirty = false;
     bool m_loadingProject = false;
+
+    QTimer* m_autoSaveTimer = nullptr;
+    QString m_autoSaveId;                   // this window's auto-save files are named after it
+    std::unique_ptr<QLockFile> m_autoSaveLock; // held while we run, so a crash leaves it stale
 };

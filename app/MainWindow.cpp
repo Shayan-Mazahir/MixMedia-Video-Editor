@@ -21,7 +21,10 @@
 #include <QCloseEvent>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QDateTime>
 #include <QListWidgetItem>
+#include <QLockFile>
+#include <QUuid>
 #include <QMimeData>
 #include <QPointer>
 #include <QThreadPool>
@@ -190,6 +193,17 @@ MainWindow::MainWindow(QWidget* parent)
     m_playTimer->setInterval(16);
     connect(m_playTimer, &QTimer::timeout, this, &MainWindow::onTick);
 
+    // Auto-save every minute (MIXMEDIA_AUTOSAVE_SECONDS changes that, handy for testing)
+    m_autoSaveId = QUuid::createUuid().toString(QUuid::Id128).left(12);
+    QDir().mkpath(autoSaveFolder());
+    m_autoSaveLock = std::make_unique<QLockFile>(QDir(autoSaveFolder()).filePath(m_autoSaveId + ".lock"));
+    m_autoSaveLock->tryLock(0);
+    m_autoSaveTimer = new QTimer(this);
+    int every = qEnvironmentVariableIntValue("MIXMEDIA_AUTOSAVE_SECONDS");
+    m_autoSaveTimer->setInterval((every > 0 ? every : 60) * 1000);
+    connect(m_autoSaveTimer, &QTimer::timeout, this, &MainWindow::autoSave);
+    m_autoSaveTimer->start();
+
     updateTimeLabel();
     updateWindowTitle();
     statusBar()->showMessage(QString("Engine v%1 · Ready").arg(ve_version()));
@@ -198,6 +212,80 @@ MainWindow::MainWindow(QWidget* parent)
 MainWindow::~MainWindow()
 {
     stopPlayback();
+    clearAutoSave(); // closing normally: nothing to recover
+}
+
+// ---- Auto-save ----
+
+QString MainWindow::autoSaveFolder()
+{
+    return QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)).filePath("autosave");
+}
+
+void MainWindow::autoSave()
+{
+    if (!m_dirty || m_timeline->clips().isEmpty())
+        return;
+    QDir dir(autoSaveFolder());
+    QString error;
+    if (!ProjectFile::save(dir.filePath(m_autoSaveId + ".mixmedia"), projectData(), &error))
+        return; // not worth interrupting anyone over, we'll try again next time
+    // Remember which project it belongs to, so a recovered copy saves back to the right place
+    QFile where(dir.filePath(m_autoSaveId + ".txt"));
+    if (where.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        where.write(m_projectPath.toUtf8());
+}
+
+void MainWindow::clearAutoSave()
+{
+    QDir dir(autoSaveFolder());
+    QFile::remove(dir.filePath(m_autoSaveId + ".mixmedia"));
+    QFile::remove(dir.filePath(m_autoSaveId + ".txt"));
+}
+
+void MainWindow::offerRecovery()
+{
+    // Auto-saves whose lock nobody holds any more belong to a MixMedia that didn't close properly
+    QDir dir(autoSaveFolder());
+    QFileInfo newest;
+    QStringList orphans;
+    for (const QFileInfo& f : dir.entryInfoList({ "*.mixmedia" }, QDir::Files, QDir::Time)) {
+        QString id = f.completeBaseName();
+        if (id == m_autoSaveId)
+            continue;
+        QLockFile lock(dir.filePath(id + ".lock"));
+        if (!lock.tryLock(0))
+            continue; // another MixMedia that's still open
+        lock.unlock();
+        orphans << id;
+        if (!newest.exists())
+            newest = f;
+    }
+    if (orphans.isEmpty())
+        return;
+
+    auto forget = [&] {
+        for (const QString& id : orphans)
+            for (const char* ext : { ".mixmedia", ".txt", ".lock" })
+                QFile::remove(dir.filePath(id + ext));
+    };
+    QFile where(dir.filePath(newest.completeBaseName() + ".txt"));
+    QString original = where.open(QIODevice::ReadOnly) ? QString::fromUtf8(where.readAll()) : QString();
+    QString name = original.isEmpty() ? QStringLiteral("an unsaved project") : QFileInfo(original).fileName();
+
+    auto answer = QMessageBox::question(
+        this, "Get your work back?",
+        QString("MixMedia didn't close properly last time. There's an auto-saved copy of %1 from %2.\n\n"
+                "Open it?")
+            .arg(name, QLocale().toString(newest.lastModified(), QLocale::ShortFormat)),
+        QMessageBox::Open | QMessageBox::Discard, QMessageBox::Open);
+    if (answer == QMessageBox::Open && loadProject(newest.filePath())) {
+        // It's still unsaved work: point it back at the real project and leave it marked as changed
+        m_projectPath = original;
+        setDirty(true);
+        statusBar()->showMessage("Recovered your auto-saved work. Save it to keep it!", 8000);
+    }
+    forget();
 }
 
 // ---- Building the window ----
@@ -653,24 +741,29 @@ bool MainWindow::loadProject(const QString& path)
     return true;
 }
 
-bool MainWindow::saveProject()
+ProjectFile::Data MainWindow::projectData() const
 {
-    if (m_projectPath.isEmpty())
-        return saveProjectAs();
-
     ProjectFile::Data data;
     for (int i = 0; i < m_mediaBin->count(); ++i)
         data.media << m_mediaBin->item(i)->data(MediaBin::PathRole).toString();
     data.clips = m_timeline->clips();
     data.tracks = m_timeline->tracks();
     data.playhead = m_timeline->playhead();
+    return data;
+}
+
+bool MainWindow::saveProject()
+{
+    if (m_projectPath.isEmpty())
+        return saveProjectAs();
 
     QString error;
-    if (!ProjectFile::save(m_projectPath, data, &error)) {
+    if (!ProjectFile::save(m_projectPath, projectData(), &error)) {
         QMessageBox::warning(this, "Couldn't save", error);
         return false;
     }
     setDirty(false);
+    clearAutoSave();
     statusBar()->showMessage("Saved " + QFileInfo(m_projectPath).fileName(), 4000);
     return true;
 }
@@ -859,6 +952,7 @@ void MainWindow::exportVideo()
     settings.crf = dialog.crf();
     settings.force_software = dialog.useGraphicsCard() ? 0 : 1;
     settings.copy_only = dialog.instant() ? 1 : 0;
+    settings.format = dialog.format();
 
     QThread* worker = QThread::create([job, clips, path, settings]() mutable {
         settings.path = path.constData();
@@ -909,7 +1003,8 @@ void MainWindow::exportVideo()
                             .arg(QFileInfo(dialog.path()).fileName(),
                                  formatDuration(clock.elapsed() / 1000.0),
                                  job->encoder == "copy"      ? QStringLiteral("instant copy")
-                                 : job->encoder == "libx264" ? QStringLiteral("the CPU")
+                                 : job->encoder == "libx264" || job->encoder == "gif" || job->encoder == "sound"
+                                     ? QStringLiteral("the CPU")
                                                              : QStringLiteral("the graphics card")),
                         QMessageBox::Ok, this);
         QPushButton* show = box.addButton("Show in folder", QMessageBox::ActionRole);

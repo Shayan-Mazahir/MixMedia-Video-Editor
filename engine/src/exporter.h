@@ -9,7 +9,10 @@
 
 namespace ve {
 
+enum class ExportFormat { Mp4, Gif, Mp3, M4a };
+
 struct ExportSettings {
+    ExportFormat format = ExportFormat::Mp4;
     std::string path;
     int width = 1920;
     int height = 1080;
@@ -24,5 +27,14 @@ using ProgressFn = int (*)(double done, void* user);
 // Returns one of the VE_ codes from engine.h. encoderUsed (optional) gets the encoder's name.
 int exportTimeline(Timeline& timeline, const ExportSettings& settings, ProgressFn progress, void* user,
                    std::string* encoderUsed = nullptr);
+
+// An animated GIF (no sound, 256 colours)
+int exportGif(Timeline& timeline, const ExportSettings& settings, ProgressFn progress, void* user);
+
+// Just the sound, as MP3 or M4A
+int exportSound(Timeline& timeline, const ExportSettings& settings, ProgressFn progress, void* user);
+
+// Can this FFmpeg make it? (MP3 needs LAME, which some builds leave out)
+bool formatAvailable(ExportFormat format);
 
 } // namespace ve

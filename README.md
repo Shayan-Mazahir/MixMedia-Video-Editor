@@ -38,7 +38,10 @@ Everything it needs is included, so there's nothing else to install.
 - **Precise controls**: every slider has a box for typing exact numbers
 - **Drag files in** straight from your file manager, plus right-click menus and keyboard shortcuts (arrows to step frames, ↑ ↓ to jump between cuts)
 - **Projects**: save and open `.mixmedia` files
-- **Export to MP4**
+- **Auto-save**: unsaved work gets a backup copy every minute. If MixMedia crashes, it offers to bring it back next time (your project file is only written when you save).
+- **Export**
+  - *Presets*: YouTube 1080p and 4K, Shorts / TikTok / Reels (tall), Instagram square, small file to send, GIF, and sound only
+  - *Formats*: MP4, animated GIF, MP3 or M4A
   - *Instant*: copies simple cuts without re-encoding, so it takes seconds
   - *Normal*: re-encodes everything, on your graphics card if it can (Intel, AMD or NVIDIA), otherwise on the CPU
 

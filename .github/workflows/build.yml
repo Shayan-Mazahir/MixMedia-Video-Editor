@@ -163,7 +163,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ninja-build meson nasm pkg-config gcc-12 g++-12 \
-            libx264-dev libva-dev libdrm-dev zlib1g-dev \
+            libx264-dev libmp3lame-dev libva-dev libdrm-dev zlib1g-dev \
             libgl-dev libegl-dev libxkbcommon-dev libxkbcommon-x11-0 libpulse-dev libfuse2 file \
             libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
             libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1
@@ -173,7 +173,7 @@ jobs:
         id: ffmpeg-cache
         with:
           path: ffmpeg
-          key: ffmpeg-${{ env.FFMPEG_VERSION }}-dav1d-${{ env.DAV1D_VERSION }}-ubuntu22-v2
+          key: ffmpeg-${{ env.FFMPEG_VERSION }}-dav1d-${{ env.DAV1D_VERSION }}-ubuntu22-v3
 
       - name: Build FFmpeg
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
@@ -189,7 +189,7 @@ jobs:
           curl -fsSL https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz | tar xJ
           cd ffmpeg-$FFMPEG_VERSION
           ./configure --prefix="$FFMPEG_PREFIX" --enable-shared --disable-static \
-            --enable-gpl --enable-libx264 --enable-libdav1d --enable-vaapi --enable-libdrm --enable-zlib \
+            --enable-gpl --enable-libx264 --enable-libmp3lame --enable-libdav1d --enable-vaapi --enable-libdrm --enable-zlib \
             --disable-programs --disable-doc --disable-network --disable-autodetect \
             --pkg-config-flags=--static
           make -j$(nproc)

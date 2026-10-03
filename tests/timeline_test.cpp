@@ -5,12 +5,18 @@
 // Run with: QT_QPA_PLATFORM=offscreen ./build/tests/timeline_test
 
 #include "ClipPresets.h"
+#include "MainWindow.h"
 #include "NumberSlider.h"
 #include "ProjectFile.h"
 #include "TimelineWidget.h"
 
 #include <QApplication>
+#include <QDir>
 #include <QDoubleSpinBox>
+#include <QFile>
+#include <QMessageBox>
+#include <QPushButton>
+#include <QStandardPaths>
 #include <QDropEvent>
 #include <QMimeData>
 #include <QMouseEvent>
@@ -18,6 +24,7 @@
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTimer>
 
 namespace {
 
@@ -721,6 +728,49 @@ private slots:
         QList<RenderClip> r = tl->renderClips();
         QCOMPARE(r.size(), 2);
         QVERIFY(r[1].layer > r[0].layer); // Video 2 draws over Video 1
+    }
+
+    void crashRecoveryBringsWorkBack()
+    {
+        // Pretend an earlier MixMedia crashed: an auto-save with nobody holding its lock
+        QStandardPaths::setTestModeEnabled(true); // (keeps this away from your real files)
+        QDir folder(QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)).filePath("autosave"));
+        QVERIFY(folder.mkpath("."));
+        ProjectFile::Data data;
+        TimelineClip c = fakeVideo(7);
+        c.track = 3; // Video 1
+        data.clips = { c };
+        data.tracks = TimelineWidget::defaultTracks();
+        QString error;
+        QVERIFY(ProjectFile::save(folder.filePath("crashed.mixmedia"), data, &error));
+        QFile where(folder.filePath("crashed.txt"));
+        QVERIFY(where.open(QIODevice::WriteOnly));
+        where.write(QDir::temp().filePath("Holiday.mixmedia").toUtf8());
+        where.close();
+
+        MainWindow window;
+        // Say yes to "Get your work back?" when it pops up (and OK to "some files are missing",
+        // since the fake clip's file doesn't exist)
+        QStringList asked;
+        QTimer clicker;
+        clicker.setInterval(20);
+        QObject::connect(&clicker, &QTimer::timeout, [&] {
+            for (QWidget* w : QApplication::topLevelWidgets()) {
+                auto* box = qobject_cast<QMessageBox*>(w);
+                if (!box || !box->isVisible())
+                    continue;
+                asked << box->windowTitle();
+                QAbstractButton* yes = box->button(QMessageBox::Open);
+                (yes ? yes : box->button(QMessageBox::Ok))->click();
+            }
+        });
+        clicker.start();
+        window.offerRecovery();
+        clicker.stop();
+        QVERIFY(asked.contains("Get your work back?"));
+        QCOMPARE(window.windowTitle(), QString("Holiday* — MixMedia Video Editor")); // back, and still unsaved
+        QVERIFY(!QFile::exists(folder.filePath("crashed.mixmedia"))); // and only offered the once
+        QVERIFY(!QFile::exists(folder.filePath("crashed.txt")));
     }
 };
 

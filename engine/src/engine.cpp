@@ -317,7 +317,7 @@ int ve_export(ve_timeline* tl, ve_export_settings* settings,
     if (!tl || !settings || !settings->path)
         return VE_ERR_ARG;
 
-    if (settings->copy_only) {
+    if (settings->copy_only && settings->format == VE_FORMAT_MP4) {
         std::string source, why;
         std::vector<ve::CopySegment> segments;
         if (!tl->timeline.copyPlan(source, segments, why))
@@ -332,11 +332,28 @@ int ve_export(ve_timeline* tl, ve_export_settings* settings,
     s.fps = settings->fps;
     s.crf = settings->crf > 0 ? settings->crf : 20;
     s.hardware = settings->force_software == 0;
+    s.format = ve::ExportFormat(std::clamp(settings->format, 0, int(VE_FORMAT_M4A)));
+
+    if (s.format == ve::ExportFormat::Gif) {
+        copyName(settings->encoder_used, sizeof settings->encoder_used, "gif");
+        return ve::exportGif(tl->timeline, s, progress, user);
+    }
+    if (s.format == ve::ExportFormat::Mp3 || s.format == ve::ExportFormat::M4a) {
+        copyName(settings->encoder_used, sizeof settings->encoder_used, "sound");
+        return ve::exportSound(tl->timeline, s, progress, user);
+    }
 
     std::string used;
     int rc = ve::exportTimeline(tl->timeline, s, progress, user, &used);
     copyName(settings->encoder_used, sizeof settings->encoder_used, used.c_str());
     return rc;
+}
+
+int ve_export_format_available(int format)
+{
+    if (format < VE_FORMAT_MP4 || format > VE_FORMAT_M4A)
+        return 0;
+    return ve::formatAvailable(ve::ExportFormat(format)) ? 1 : 0;
 }
 
 } // extern "C"
