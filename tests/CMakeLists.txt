@@ -4,3 +4,6 @@ target_link_libraries(timeline_test PRIVATE editor_ui Qt6::Test)
 enable_testing()
 add_test(NAME timeline COMMAND timeline_test)
 set_tests_properties(timeline PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# A plain console program on Windows too, so test results show up in the log
+set_target_properties(timeline_test PROPERTIES WIN32_EXECUTABLE FALSE)

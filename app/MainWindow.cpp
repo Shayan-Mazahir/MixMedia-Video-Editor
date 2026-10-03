@@ -269,8 +269,13 @@ void MainWindow::offerRecovery()
             for (const char* ext : { ".mixmedia", ".txt", ".lock" })
                 QFile::remove(dir.filePath(id + ext));
     };
-    QFile where(dir.filePath(newest.completeBaseName() + ".txt"));
-    QString original = where.open(QIODevice::ReadOnly) ? QString::fromUtf8(where.readAll()) : QString();
+    QString original;
+    {
+        // (closed again straight away: Windows won't delete a file that's still open)
+        QFile where(dir.filePath(newest.completeBaseName() + ".txt"));
+        if (where.open(QIODevice::ReadOnly))
+            original = QString::fromUtf8(where.readAll());
+    }
     QString name = original.isEmpty() ? QStringLiteral("an unsaved project") : QFileInfo(original).fileName();
 
     auto answer = QMessageBox::question(
