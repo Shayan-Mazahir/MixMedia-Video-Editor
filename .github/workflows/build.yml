@@ -1,9 +1,9 @@
 # Builds MixMedia on Windows and Linux every time you push and runs the tests.
-# Each run keeps a Windows zip and a Linux AppImage (look under "Artifacts" on the run's page).
 #
 # Making a release: tag a version and push the tag, e.g.
 #   git tag v0.2.0 && git push origin v0.2.0
-# and both files get attached to a new release on the Releases page.
+# Both get packaged (a Windows zip and a Linux AppImage) and attached to a new release.
+# "Run workflow" on the Actions page also packages them, without making a release.
 
 name: Build
 
@@ -11,8 +11,20 @@ on:
   push:
     branches: ["**"]
     tags: ["v*"]
+    # Only docs or pictures changed? Nothing to build. (Tags always build.)
+    paths-ignore: ["**.md", "LICENSE", "NOTICE", "*.png"]
   pull_request:
+    paths-ignore: ["**.md", "LICENSE", "NOTICE", "*.png"]
   workflow_dispatch: # adds a "Run workflow" button on GitHub
+
+# Pushed again before the last run finished? Stop the old one, it's out of date anyway.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  # Only bother making the zip and AppImage for releases and manual runs
+  PACKAGE: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
 
 jobs:
   windows:
@@ -20,49 +32,56 @@ jobs:
     defaults:
       run:
         shell: msys2 {0}
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
     steps:
       - uses: actions/checkout@v7
 
-      # MSYS2 gives us the same GCC + Qt + FFmpeg setup we use on Linux
+      # MSYS2 gives us the same GCC + Qt + FFmpeg setup we use on Linux.
+      # The downloaded packages are cached, so after the first run this is much quicker.
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
           update: true
+          cache: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-ccache
+            mingw-w64-ucrt-x86_64-qt6-base
+            mingw-w64-ucrt-x86_64-qt6-multimedia
+            mingw-w64-ucrt-x86_64-qt6-tools
+            mingw-w64-ucrt-x86_64-ffmpeg
 
-      # Download servers sometimes stall, so have a few goes before giving up
-      - name: Install tools
-        run: |
-          for attempt in 1 2 3; do
-            pacman -S --needed --noconfirm \
-              mingw-w64-ucrt-x86_64-gcc \
-              mingw-w64-ucrt-x86_64-cmake \
-              mingw-w64-ucrt-x86_64-ninja \
-              mingw-w64-ucrt-x86_64-pkgconf \
-              mingw-w64-ucrt-x86_64-qt6-base \
-              mingw-w64-ucrt-x86_64-qt6-multimedia \
-              mingw-w64-ucrt-x86_64-qt6-tools \
-              mingw-w64-ucrt-x86_64-ffmpeg && exit 0
-            echo "Download hiccup, trying again in 20 seconds (attempt $attempt)..."
-            sleep 20
-          done
-          exit 1
+      # Remembers compiled files between runs, so only what changed gets rebuilt
+      - uses: actions/cache@v6
+        with:
+          path: .ccache
+          key: ccache-windows-${{ github.sha }}
+          restore-keys: ccache-windows-
 
       - name: Build
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_C_COMPILER_LAUNCHER=ccache
           cmake --build build
+          ccache --show-stats --verbose | head -5 || true
 
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
       - name: Bundle everything it needs
+        if: env.PACKAGE == 'true'
         run: cmake --install build --prefix MixMedia
 
       - name: Zip it up
+        if: env.PACKAGE == 'true'
         shell: pwsh
         run: Compress-Archive -Path MixMedia -DestinationPath MixMedia-Windows-x64.zip
 
       - uses: actions/upload-artifact@v7
+        if: env.PACKAGE == 'true'
         with:
           name: MixMedia-Windows
           path: MixMedia-Windows-x64.zip
@@ -71,25 +90,50 @@ jobs:
     runs-on: ubuntu-latest
     # Fedora has new enough Qt and FFmpeg (with RPM Fusion for the full codecs)
     container: fedora:latest
+    env:
+      CCACHE_DIR: /__w/ccache
     steps:
+      # The cache needs tar and zstd, which a bare Fedora container might not have
+      - name: Get ready
+        run: dnf install -y --setopt=install_weak_deps=False tar zstd
+
+      # Downloaded packages are kept between runs too
+      - uses: actions/cache@v6
+        with:
+          path: /var/cache/libdnf5
+          key: dnf-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: dnf-${{ runner.os }}-
+
       - name: Install tools
         run: |
-          dnf install -y https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm
-          dnf install -y git gcc-c++ cmake ninja-build file findutils \
+          # keepcache = hang on to downloads for next time,
+          # install_weak_deps=False = skip the optional extras (cuts the download a lot)
+          opts="-y --setopt=keepcache=True --setopt=install_weak_deps=False"
+          dnf install $opts https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm
+          dnf install $opts git gcc-c++ cmake ninja-build ccache file findutils zstd \
             qt6-qtbase-devel qt6-qtmultimedia-devel ffmpeg-devel
 
       - uses: actions/checkout@v7
 
+      - uses: actions/cache@v6
+        with:
+          path: /__w/ccache
+          key: ccache-linux-${{ github.sha }}
+          restore-keys: ccache-linux-
+
       - name: Build
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_C_COMPILER_LAUNCHER=ccache
           cmake --build build
+          ccache --show-stats | head -5 || true
 
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
       # An AppImage is one file with the app and everything it needs inside
       - name: Make the AppImage
+        if: env.PACKAGE == 'true'
         env:
           APPIMAGE_EXTRACT_AND_RUN: 1 # containers can't mount AppImages, so unpack them instead
           NO_STRIP: 1 # linuxdeploy's own strip is older than Fedora's libraries and chokes on them
@@ -108,6 +152,7 @@ jobs:
             --plugin qt --output appimage
 
       - uses: actions/upload-artifact@v7
+        if: env.PACKAGE == 'true'
         with:
           name: MixMedia-Linux
           path: MixMedia-Linux-x86_64.AppImage
