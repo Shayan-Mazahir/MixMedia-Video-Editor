@@ -151,49 +151,20 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
     env:
-      FFMPEG_VERSION: "8.1.3"
-      DAV1D_VERSION: "1.5.1"
       FFMPEG_PREFIX: ${{ github.workspace }}/ffmpeg
-      CC: gcc-12
-      CXX: g++-12
     steps:
       - uses: actions/checkout@v7
 
+      # Everything happens in packaging/linux/, so it can be run on your own machine too
+      # (packaging/linux/build-in-container.sh does the same thing in a local Ubuntu container)
       - name: Install tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ninja-build meson nasm pkg-config gcc-12 g++-12 \
-            libx264-dev libmp3lame-dev libva-dev libdrm-dev zlib1g-dev \
-            libgl-dev libegl-dev libxkbcommon-dev libxkbcommon-x11-0 libpulse-dev libfuse2 file \
-            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
-            libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1
+        run: packaging/linux/install-ubuntu-deps.sh
 
-      # FFmpeg with just what a video editor needs (no network stuff dragging in Samba and friends)
+      # FFmpeg is slow to build, so keep it between runs
       - uses: actions/cache@v6
-        id: ffmpeg-cache
         with:
           path: ffmpeg
-          key: ffmpeg-${{ env.FFMPEG_VERSION }}-dav1d-${{ env.DAV1D_VERSION }}-ubuntu22-v3
-
-      - name: Build FFmpeg
-        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
-        run: |
-          # Ubuntu 22.04's dav1d (AV1 decoding) is too old for FFmpeg 8, so build a newer one,
-          # baked straight into FFmpeg (static) so there's nothing extra to ship
-          curl -fsSL https://code.videolan.org/videolan/dav1d/-/archive/$DAV1D_VERSION/dav1d-$DAV1D_VERSION.tar.gz | tar xz
-          meson setup dav1d-build dav1d-$DAV1D_VERSION --prefix="$FFMPEG_PREFIX" --libdir=lib \
-            --buildtype=release --default-library=static -Denable_tools=false -Denable_tests=false
-          ninja -C dav1d-build install
-          export PKG_CONFIG_PATH="$FFMPEG_PREFIX/lib/pkgconfig"
-
-          curl -fsSL https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz | tar xJ
-          cd ffmpeg-$FFMPEG_VERSION
-          ./configure --prefix="$FFMPEG_PREFIX" --enable-shared --disable-static \
-            --enable-gpl --enable-libx264 --enable-libmp3lame --enable-libdav1d --enable-vaapi --enable-libdrm --enable-zlib \
-            --disable-programs --disable-doc --disable-network --disable-autodetect \
-            --pkg-config-flags=--static
-          make -j$(nproc)
-          make install
+          key: ffmpeg-${{ hashFiles('packaging/linux/ffmpeg-versions.sh') }}-ubuntu22
 
       - uses: jurplel/install-qt-action@v4
         with:
@@ -201,50 +172,8 @@ jobs:
           modules: qtmultimedia
           cache: true
 
-      - name: Build
-        run: |
-          export PKG_CONFIG_PATH="$FFMPEG_PREFIX/lib/pkgconfig"
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
-          cmake --build build
-
-      - name: Test
-        env:
-          LD_LIBRARY_PATH: ${{ env.FFMPEG_PREFIX }}/lib
-        run: ctest --test-dir build --output-on-failure
-
-      # AppImage = one file you run. The tar.gz is the same thing as a plain folder.
-      - name: Make the AppImage and the tar.gz
-        env:
-          LD_LIBRARY_PATH: ${{ env.FFMPEG_PREFIX }}/lib
-          LDAI_OUTPUT: MixMedia-Linux-x86_64.AppImage
-          EXTRA_PLATFORM_PLUGINS: libqoffscreen.so # lets the app start without a screen (used by the smoke test)
-        run: |
-          export QMAKE="$QT_ROOT_DIR/bin/qmake"
-          DESTDIR=AppDir cmake --install build
-          base=https://github.com/linuxdeploy
-          curl -fsSL -o linuxdeploy $base/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
-          curl -fsSL -o linuxdeploy-plugin-qt $base/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
-          chmod +x linuxdeploy linuxdeploy-plugin-qt
-          ./linuxdeploy --appdir AppDir \
-            --executable AppDir/usr/bin/mixmedia \
-            --desktop-file packaging/mixmedia.desktop \
-            --icon-file packaging/mixmedia.png \
-            --plugin qt --output appimage
-
-          # Same files as a folder, with a "mixmedia" to double-click at the top
-          mv AppDir MixMedia
-          ln -s usr/bin/mixmedia MixMedia/mixmedia
-          cp packaging/linux/README.txt MixMedia/
-          tar czf MixMedia-Linux-x86_64.tar.gz MixMedia
-
-      # Make sure what we just made actually starts (no screen needed for this)
-      - name: Smoke test
-        run: |
-          ./MixMedia-Linux-x86_64.AppImage --appimage-extract >/dev/null
-          QT_QPA_PLATFORM=offscreen timeout 10 ./squashfs-root/AppRun & pid=$!
-          sleep 6
-          kill -0 $pid && echo "AppImage starts fine"
-          kill $pid || true
+      - name: Build, test and package
+        run: packaging/linux/make-package.sh
 
       - uses: actions/upload-artifact@v7
         with:

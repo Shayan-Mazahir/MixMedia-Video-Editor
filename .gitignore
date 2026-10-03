@@ -3,3 +3,8 @@ readme.txt
 build/
 
 videos to test with/
+
+# Linux package builds (packaging/linux/)
+.package-cache/
+MixMedia-Linux-x86_64.AppImage
+MixMedia-Linux-x86_64.tar.gz
