@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shayan Mazahir. Part of MixMedia Video Editor, see NOTICE.
 
 #include "ClipInspector.h"
+#include "EffectNames.h"
 #include "NumberSlider.h"
 
 #include <ve/engine.h>
@@ -145,6 +146,8 @@ ClipInspector::ClipInspector(QWidget* parent)
     m_blur = addSlider(fxForm, "Blur", "blur", 0, 100, 0, 100, 0);
     m_sharpen = addSlider(fxForm, "Sharpen", "sharpen", 0, 100, 0, 100, 0);
     m_vignette = addSlider(fxForm, "Vignette", "vignette", 0, 100, 0, 100, 0);
+    m_strength = addSlider(fxForm, "Strength", "strength", 0, 100, 0, 100, 100, " %");
+    m_strength->setToolTip("How strongly this effect applies to everything below it");
     QPushButton* resetFx = makeResetButton("Reset effects");
     fxForm->addRow(resetFx);
     layout->addWidget(m_effectsBox);
@@ -170,6 +173,36 @@ ClipInspector::ClipInspector(QWidget* parent)
     soundForm->addRow(m_detach);
     layout->addWidget(m_soundBox);
 
+    // ---- Transition into this clip ----
+    m_transitionBox = new QGroupBox("Transition");
+    auto* trForm = new QFormLayout(m_transitionBox);
+    m_transition = new QComboBox;
+    for (int i = 0; i < VE_TRANSITION_COUNT; ++i)
+        m_transition->addItem(transitionName(i), i);
+    trForm->addRow("Type", m_transition);
+    m_transitionDuration = addSlider(trForm, "Length", "transitionDuration", 0.1, 10, 0.1, 3, 1.0, " s", 2);
+    m_transitionHint = new QLabel;
+    m_transitionHint->setWordWrap(true);
+    m_transitionHint->setStyleSheet("color: #808286; font-size: 11px;");
+    trForm->addRow(m_transitionHint);
+    layout->addWidget(m_transitionBox);
+
+    // ---- Animation ----
+    m_animBox = new QGroupBox("Animation");
+    auto* animForm = new QFormLayout(m_animBox);
+    m_animIn = new QComboBox;
+    m_animOut = new QComboBox;
+    for (int i = 0; i < VE_ANIM_COUNT; ++i) {
+        m_animIn->addItem(animationName(i), i);
+        // Leaving uses the same moves, just backwards ('slide from the left' leaves to the left)
+        m_animOut->addItem(QString(animationName(i)).replace("from the", "to the"), i);
+    }
+    animForm->addRow("Coming in", m_animIn);
+    m_animInDuration = addSlider(animForm, "Takes", "animInDuration", 0.05, 10, 0.05, 3, 0.5, " s", 2);
+    animForm->addRow("Going out", m_animOut);
+    m_animOutDuration = addSlider(animForm, "Takes", "animOutDuration", 0.05, 10, 0.05, 3, 0.5, " s", 2);
+    layout->addWidget(m_animBox);
+
     // ---- Fades ----
     m_fadeBox = new QGroupBox("Fade");
     auto* fadeForm = new QFormLayout(m_fadeBox);
@@ -192,6 +225,9 @@ ClipInspector::ClipInspector(QWidget* parent)
     connect(m_color, &QPushButton::clicked, this, &ClipInspector::pickColor);
     connect(m_detach, &QPushButton::clicked, this, &ClipInspector::detachAudioClicked);
     connect(m_look, &QComboBox::currentIndexChanged, this, [this] { apply("look"); });
+    connect(m_transition, &QComboBox::currentIndexChanged, this, [this] { apply("transition"); });
+    connect(m_animIn, &QComboBox::currentIndexChanged, this, [this] { apply("animIn"); });
+    connect(m_animOut, &QComboBox::currentIndexChanged, this, [this] { apply("animOut"); });
     connect(resetFx, &QPushButton::clicked, this, &ClipInspector::resetEffects);
     connect(resetPlace, &QPushButton::clicked, this, &ClipInspector::resetPlacement);
     connect(m_speed, &QDoubleSpinBox::valueChanged, this, [this](double s) {
@@ -218,7 +254,7 @@ NumberSlider* ClipInspector::addSlider(QFormLayout* form, const QString& label, 
     return s;
 }
 
-void ClipInspector::showClip(int index, const TimelineClip& clip)
+void ClipInspector::showClip(int index, const TimelineClip& clip, int part)
 {
     m_index = index;
     m_clip = clip;
@@ -228,7 +264,7 @@ void ClipInspector::showClip(int index, const TimelineClip& clip)
         return;
 
     m_loading = true;
-    m_name->setText(clip.isTitle() ? QStringLiteral("Title") : clip.name);
+    m_name->setText(clip.isTitle() ? QStringLiteral("Title") : clip.isEffect() ? "Effect: " + clip.name : clip.name);
     QString info = QString("Starts at %1 · %2 long").arg(formatSeconds(clip.start), formatSeconds(clip.duration));
     if (clip.speed != 1.0)
         info += QString(" · %1×").arg(clip.speed);
@@ -246,11 +282,15 @@ void ClipInspector::showClip(int index, const TimelineClip& clip)
     }
 
     // Only show what makes sense for this kind of clip
-    bool video = clip.showsVideo() && !clip.isTitle();
-    m_speedBox->setVisible(!clip.isTitle() && !clip.isStill());
-    m_effectsBox->setVisible(video);
+    bool footage = clip.kind == TimelineClip::Kind::Media;
+    bool video = footage && clip.showsVideo();
+    m_speedBox->setVisible(footage && !clip.isStill());
+    m_effectsBox->setVisible(video || clip.isEffect());
+    m_strength->setVisible(clip.isEffect());
     m_placeBox->setVisible(clip.showsVideo());
     m_soundBox->setVisible(clip.hasAudio && clip.audioOn);
+    m_transitionBox->setVisible(clip.isTransition());
+    m_fadeBox->setVisible(!clip.isTransition());
     m_detach->setVisible(clip.showsVideo() && clip.playsAudio());
 
     m_speed->setValue(clip.speed);
@@ -267,6 +307,21 @@ void ClipInspector::showClip(int index, const TimelineClip& clip)
     m_posY->setValue(clip.posY * 100);
     m_opacity->setValue(clip.opacity * 100);
     m_volume->setValue(clip.volume * 100);
+    m_transition->setCurrentIndex(std::clamp(clip.transition, 0, VE_TRANSITION_COUNT - 1));
+    m_transitionDuration->setValue(clip.isTransition() ? clip.duration : clip.transitionDuration);
+    m_transitionHint->setText(part == VE_PART_IN    ? "At the start of a clip: brings everything below it in from black."
+                              : part == VE_PART_OUT ? "At the end of a clip: takes everything below it out to black."
+                              : part == VE_PART_THROUGH
+                                  ? "Plays on the spot: everything below it goes out and comes straight back in. "
+                                    "Line it up with the start or end of a clip to bring it in or out instead."
+                                  : "On a cut: the clip after overlaps the one before by this long, and they blend across it.");
+    m_strength->setValue(clip.opacity * 100);
+    m_animIn->setCurrentIndex(std::clamp(clip.animIn, 0, VE_ANIM_COUNT - 1));
+    m_animOut->setCurrentIndex(std::clamp(clip.animOut, 0, VE_ANIM_COUNT - 1));
+    m_animInDuration->setValue(clip.animInDuration);
+    m_animOutDuration->setValue(clip.animOutDuration);
+    m_animBox->setVisible(clip.showsVideo() && !clip.isEffect());
+
     m_fadeIn->setValue(clip.fadeIn);
     m_fadeOut->setValue(clip.fadeOut);
     m_loading = false;
@@ -294,7 +349,19 @@ void ClipInspector::apply(const QString& what)
     m_clip.scale = float(m_scale->value() / 100);
     m_clip.posX = float(m_posX->value() / 100);
     m_clip.posY = float(m_posY->value() / 100);
-    m_clip.opacity = float(m_opacity->value() / 100);
+    m_clip.opacity = float((m_clip.isEffect() ? m_strength->value() : m_opacity->value()) / 100);
+
+    if (m_clip.isTransition()) {
+        // The timeline slides the clips to fit the new length
+        m_clip.transition = m_transition->currentData().toInt();
+        m_clip.name = transitionName(m_clip.transition);
+        m_clip.duration = m_transitionDuration->value();
+    }
+    m_clip.animIn = m_animIn->currentData().toInt();
+    m_clip.animOut = m_animOut->currentData().toInt();
+    // Coming in and going out can't overlap
+    m_clip.animInDuration = std::min(m_animInDuration->value(), m_clip.duration);
+    m_clip.animOutDuration = std::min(m_animOutDuration->value(), m_clip.duration);
 
     if (m_clip.isTitle()) {
         m_clip.title.text = m_text->toPlainText();

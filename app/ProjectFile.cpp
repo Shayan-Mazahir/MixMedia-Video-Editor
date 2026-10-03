@@ -15,7 +15,7 @@ namespace ProjectFile {
 
 namespace {
 
-constexpr int FormatVersion = 1;
+constexpr int FormatVersion = 2; // 2 = tracks are saved, transitions are their own blocks
 
 // We keep both the full path and one relative to the project, so moving the
 // whole folder (or opening it on another computer) still finds everything.
@@ -37,10 +37,31 @@ QString resolve(const QJsonObject& ref, const QDir& projectDir, QStringList* mis
     return full;
 }
 
+QString kindName(TimelineClip::Kind kind)
+{
+    switch (kind) {
+    case TimelineClip::Kind::Title: return "title";
+    case TimelineClip::Kind::Effect: return "effect";
+    case TimelineClip::Kind::Transition: return "transition";
+    default: return "media";
+    }
+}
+
+TimelineClip::Kind kindFromName(const QString& name)
+{
+    if (name == "title")
+        return TimelineClip::Kind::Title;
+    if (name == "effect")
+        return TimelineClip::Kind::Effect;
+    if (name == "transition")
+        return TimelineClip::Kind::Transition;
+    return TimelineClip::Kind::Media;
+}
+
 QJsonObject clipToJson(const TimelineClip& c, const QDir& dir)
 {
     QJsonObject o {
-        { "kind", c.isTitle() ? "title" : "media" },
+        { "kind", kindName(c.kind) },
         { "name", c.name },
         { "start", c.start },
         { "in", c.in },
@@ -72,6 +93,13 @@ QJsonObject clipToJson(const TimelineClip& c, const QDir& dir)
             { "sharpen", c.sharpen },
             { "vignette", c.vignette },
         } },
+        { "transition", QJsonObject { { "type", c.transition }, { "duration", c.transitionDuration } } },
+        { "animation", QJsonObject {
+            { "in", c.animIn },
+            { "inDuration", c.animInDuration },
+            { "out", c.animOut },
+            { "outDuration", c.animOutDuration },
+        } },
     };
     if (c.isTitle()) {
         o["title"] = QJsonObject {
@@ -82,7 +110,7 @@ QJsonObject clipToJson(const TimelineClip& c, const QDir& dir)
             { "box", c.title.box },
             { "bold", c.title.bold },
         };
-    } else {
+    } else if (c.kind == TimelineClip::Kind::Media) {
         o["file"] = fileRef(c.path, dir);
     }
     return o;
@@ -91,7 +119,7 @@ QJsonObject clipToJson(const TimelineClip& c, const QDir& dir)
 TimelineClip clipFromJson(const QJsonObject& o, const QDir& dir, QStringList* missing)
 {
     TimelineClip c;
-    c.kind = o["kind"].toString() == "title" ? TimelineClip::Kind::Title : TimelineClip::Kind::Media;
+    c.kind = kindFromName(o["kind"].toString());
     c.name = o["name"].toString();
     c.start = o["start"].toDouble();
     c.in = o["in"].toDouble();
@@ -122,6 +150,14 @@ TimelineClip clipFromJson(const QJsonObject& o, const QDir& dir, QStringList* mi
     c.blur = float(fx["blur"].toDouble());
     c.sharpen = float(fx["sharpen"].toDouble());
     c.vignette = float(fx["vignette"].toDouble());
+    QJsonObject tr = o["transition"].toObject();
+    c.transition = tr["type"].toInt();
+    c.transitionDuration = tr["duration"].toDouble(1.0);
+    QJsonObject anim = o["animation"].toObject();
+    c.animIn = anim["in"].toInt();
+    c.animInDuration = anim["inDuration"].toDouble(0.5);
+    c.animOut = anim["out"].toInt();
+    c.animOutDuration = anim["outDuration"].toDouble(0.5);
     if (c.isTitle()) {
         QJsonObject t = o["title"].toObject();
         c.title.text = t["text"].toString();
@@ -130,7 +166,7 @@ TimelineClip clipFromJson(const QJsonObject& o, const QDir& dir, QStringList* mi
         c.title.y = t["y"].toDouble(0.82);
         c.title.box = t["box"].toBool(true);
         c.title.bold = t["bold"].toBool(true);
-    } else {
+    } else if (c.kind == TimelineClip::Kind::Media) {
         c.path = resolve(o["file"].toObject(), dir, missing);
     }
     return c;
@@ -148,12 +184,17 @@ bool save(const QString& path, const Data& data, QString* error)
     QJsonArray clips;
     for (const TimelineClip& c : data.clips)
         clips << clipToJson(c, dir);
+    QJsonArray tracks;
+    for (const TimelineTrack& t : data.tracks) {
+        const char* kind = t.kind == TimelineTrack::Kind::Fx ? "fx" : t.kind == TimelineTrack::Kind::Audio ? "audio" : "video";
+        tracks << QJsonObject { { "name", t.name }, { "kind", kind } };
+    }
 
     QJsonObject root {
         { "app", "MixMedia Video Editor" },
         { "version", FormatVersion },
         { "media", media },
-        { "timeline", QJsonObject { { "playhead", data.playhead }, { "clips", clips } } },
+        { "timeline", QJsonObject { { "playhead", data.playhead }, { "tracks", tracks }, { "clips", clips } } },
     };
 
     // QSaveFile writes to a temp file first, so a crash mid-save can't wreck your project
@@ -195,6 +236,14 @@ bool load(const QString& path, Data* data, QStringList* missing, QString* error)
         data->media << resolve(m.toObject(), dir, missing);
     QJsonObject timeline = root["timeline"].toObject();
     data->playhead = timeline["playhead"].toDouble();
+    for (const QJsonValue& v : timeline["tracks"].toArray()) {
+        QJsonObject t = v.toObject();
+        QString kind = t["kind"].toString();
+        data->tracks << TimelineTrack { t["name"].toString(),
+                                        kind == "fx"      ? TimelineTrack::Kind::Fx
+                                        : kind == "audio" ? TimelineTrack::Kind::Audio
+                                                          : TimelineTrack::Kind::Video };
+    }
     for (const QJsonValue& c : timeline["clips"].toArray())
         data->clips << clipFromJson(c.toObject(), dir, missing);
     return true;

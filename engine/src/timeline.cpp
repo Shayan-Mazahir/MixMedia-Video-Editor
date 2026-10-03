@@ -91,6 +91,7 @@ void Timeline::setClips(const std::vector<Clip>& clips)
         }
         m_slots.push_back(std::move(slot));
     }
+    linkTransitions();
 }
 
 double Timeline::duration() const
@@ -123,7 +124,7 @@ void trimDecoders(Slots& slots, double t, Get get, Used used)
             if (!get(s))
                 continue;
             ++open;
-            if (!s.clip.activeAt(t) && (!oldest || used(s) < used(*oldest)))
+            if (!s.clip.inUse(t) && (!oldest || used(s) < used(*oldest)))
                 oldest = &s;
         }
         if (open <= MaxOpenDecoders || !oldest)
@@ -150,7 +151,7 @@ auto* idleDecoderFor(Slots& slots, const Slot& me, double t, Get get, Used used)
 {
     decltype(&slots[0]) best = nullptr;
     for (auto& o : slots) {
-        if (&o == &me || !get(o) || o.clip.path != me.clip.path || o.clip.activeAt(t))
+        if (&o == &me || !get(o) || o.clip.path != me.clip.path || o.clip.inUse(t))
             continue;
         if (!best || used(o) > used(*best)) // the most recently used is probably nearest
             best = &o;
@@ -203,7 +204,7 @@ bool Timeline::renderVideoDirect(double t, int w, int h, AVFrame* out)
     closeIdleVideo(t);
     Slot* only = nullptr;
     for (Slot& s : m_slots) {
-        if (!s.clip.useVideo || !s.clip.activeAt(t))
+        if (!s.clip.useVideo || !s.clip.inUse(t))
             continue;
         if (only)
             return false; // stacked clips need the full treatment
@@ -233,6 +234,328 @@ bool Timeline::renderVideoDirect(double t, int w, int h, AVFrame* out)
     return reader->toYuv420(frame, w, h, out);
 }
 
+namespace {
+
+double smooth(double p) // eases in and out, so movement doesn't start or stop with a jolt
+{
+    p = std::clamp(p, 0.0, 1.0);
+    return p * p * (3 - 2 * p);
+}
+
+double easeOut(double p) // fast start, gentle landing
+{
+    p = std::clamp(p, 0.0, 1.0);
+    return 1 - (1 - p) * (1 - p) * (1 - p);
+}
+
+} // namespace
+
+void Timeline::linkTransitions()
+{
+    for (Slot& s : m_slots) {
+        s.prev = s.next = -1;
+        s.clip.preRoll = s.clip.postRoll = 0.0;
+        s.clip.blendInFrom = s.clip.blendInTo = s.clip.blendOutFrom = s.clip.blendOutTo = 0.0;
+    }
+    auto link = [&](size_t i, size_t j, double from, double to) {
+        m_slots[j].prev = int(i);
+        m_slots[i].next = int(j);
+        m_slots[j].clip.blendInFrom = m_slots[i].clip.blendOutFrom = from;
+        m_slots[j].clip.blendInTo = m_slots[i].clip.blendOutTo = to;
+    };
+
+    for (size_t j = 0; j < m_slots.size(); ++j) {
+        Clip& b = m_slots[j].clip;
+        if (b.kind != Clip::Kind::Media || b.transition == Transition::None)
+            continue;
+
+        // Filmora style: this clip overlaps the end of the one before, and they blend across the overlap.
+        // (Works even when both bits come from one continuous recording: you see the end of the
+        // first blending into the start of the second.)
+        bool linked = false;
+        for (size_t i = 0; i < m_slots.size() && !linked; ++i) {
+            const Clip& a = m_slots[i].clip;
+            if (i == j || a.kind != Clip::Kind::Media || a.layer != b.layer || a.start >= b.start - 0.001
+                || a.end() <= b.start + 0.001)
+                continue;
+            link(i, j, b.start, std::min(a.end(), b.end()));
+            linked = true;
+        }
+
+        // Otherwise, clips that just touch: borrow a little footage either side of the cut
+        for (size_t i = 0; i < m_slots.size() && !linked; ++i) {
+            Clip& a = m_slots[i].clip;
+            if (i == j || a.kind != Clip::Kind::Media || a.layer != b.layer || std::abs(a.end() - b.start) > 0.01)
+                continue;
+            // Half the transition comes from each side, so it can't be longer than either clip
+            double d = std::min({ b.transitionDuration, a.duration, b.duration });
+            if (d <= 0.0)
+                break;
+            b.preRoll = d / 2;
+            a.postRoll = d / 2;
+            link(i, j, b.start - d / 2, b.start + d / 2);
+            linked = true;
+        }
+    }
+}
+
+void Timeline::drawSlot(Slot& s, double t, int w, int h, uint8_t* canvas, bool bgra, DrawMods mods)
+{
+    VideoReader* reader = videoFor(s, t);
+    if (!reader)
+        return;
+    const Clip& c = s.clip;
+    const AVFrame* frame = reader->frameAt(std::max(0.0, c.sourceTime(t)));
+    if (!frame || frame->width <= 0 || frame->height <= 0)
+        return;
+
+    // Arriving or leaving animations
+    // (returns how much of the clip a wipe has uncovered, 1 for everything else)
+    auto animate = [&](Anim anim, double e) {
+        switch (anim) {
+        case Anim::Fade: mods.opacity *= e; break;
+        case Anim::SlideLeft: mods.dx -= (1 - e) * w; break;
+        case Anim::SlideRight: mods.dx += (1 - e) * w; break;
+        case Anim::SlideUp: mods.dy -= (1 - e) * h; break;
+        case Anim::SlideDown: mods.dy += (1 - e) * h; break;
+        case Anim::Zoom:
+            mods.scale *= 0.5 + 0.5 * e;
+            mods.opacity *= e;
+            break;
+        case Anim::Wipe: return e; // handled once we know where the clip sits
+        default: break;
+        }
+        return 1.0;
+    };
+    double wipeIn = 1.0, wipeOut = 1.0;
+    if (c.animIn != Anim::None && c.animInDuration > 0)
+        wipeIn = animate(c.animIn, easeOut((t - c.start) / c.animInDuration));
+    if (c.animOut != Anim::None && c.animOutDuration > 0)
+        wipeOut = animate(c.animOut, easeOut((c.end() - t) / c.animOutDuration));
+
+    // Fit inside the canvas keeping the shape (black bars if it doesn't match),
+    // then the clip's own size and position on top (picture-in-picture)
+    double fit = std::min(double(w) / frame->width, double(h) / frame->height);
+    double size = std::clamp(double(c.scale) * mods.scale, 0.02, 4.0);
+    int fw = std::max(1, int(std::lround(frame->width * fit * size)));
+    int fh = std::max(1, int(std::lround(frame->height * fit * size)));
+    int x = (w - fw) / 2 + int(std::lround(c.posX * w + mods.dx));
+    int y = (h - fh) / 2 + int(std::lround(c.posY * h + mods.dy));
+
+    // Solid and fully faded in? Paint it straight on. Otherwise mix it with what's underneath.
+    double opacity = c.envelope(t) * c.opacity * mods.opacity;
+    if (opacity <= 0.0)
+        return;
+    int x0 = std::max({ 0, x, mods.clipX0 });
+    int x1 = std::min({ w, x + fw, mods.clipX1 });
+    int y0 = std::max({ 0, y, mods.clipY0 });
+    int y1 = std::min({ h, y + fh, mods.clipY1 });
+    // Wipe animations uncover the clip from left to right (and cover it back up when leaving)
+    x1 = std::min(x1, x + int(std::lround(fw * std::min(wipeIn, wipeOut))));
+    if (x0 >= x1 || y0 >= y1)
+        return;
+
+    bool solid = opacity >= 1.0 && !hasAlpha(frame);
+    bool wholeCanvas = fw == w && fh == h && x == 0 && y == 0 && x0 == 0 && y0 == 0 && x1 == w && y1 == h;
+    bool effects = c.effects.any();
+    const uint8_t* pixels = nullptr;
+    if (reader->isStill()) {
+        // Pictures never change, so scale once and reuse it until the size changes
+        if (s.still.empty() || s.stillW != fw || s.stillH != fh || s.stillBgra != bgra) {
+            s.still.resize(size_t(fw) * fh * 4);
+            if (!reader->scale(frame, fw, fh, s.still.data(), fw * 4, bgra)) {
+                s.still.clear();
+                return;
+            }
+            s.stillW = fw;
+            s.stillH = fh;
+            s.stillBgra = bgra;
+        }
+        pixels = s.still.data();
+    } else if (solid && wholeCanvas && !effects) {
+        reader->scale(frame, w, h, canvas, w * 4, bgra);
+        return;
+    } else {
+        m_scratch.resize(size_t(fw) * fh * 4);
+        if (!reader->scale(frame, fw, fh, m_scratch.data(), fw * 4, bgra))
+            return;
+        pixels = m_scratch.data();
+    }
+
+    if (effects) {
+        // Work on a copy, so a cached still picture stays untouched
+        m_layer.assign(pixels, pixels + size_t(fw) * fh * 4);
+        applyEffects(m_layer.data(), fw, fh, c.effects, bgra, m_fx);
+        pixels = m_layer.data();
+    }
+
+    // Only the part that's actually showing
+    for (int row = y0; row < y1; ++row) {
+        uint8_t* dst = canvas + (size_t(row) * w + x0) * 4;
+        const uint8_t* src = pixels + (size_t(row - y) * fw + (x0 - x)) * 4;
+        if (solid)
+            std::memcpy(dst, src, size_t(x1 - x0) * 4);
+        else
+            blendRow(dst, src, x1 - x0, opacity);
+    }
+}
+
+void Timeline::drawTransition(Slot& a, Slot& b, double t, int w, int h, uint8_t* canvas, bool bgra)
+{
+    // p goes 0 -> 1 across the transition, which is centred on the cut
+    double p = std::clamp((t - b.clip.blendInFrom) / (b.clip.blendInTo - b.clip.blendInFrom), 0.0, 1.0);
+    double e = smooth(p);
+    DrawMods first, second;
+
+    switch (b.clip.transition) {
+    case Transition::Dissolve:
+        second.opacity = p;
+        break;
+    case Transition::FadeBlack: // down to black, then back up
+        if (p < 0.5) {
+            first.opacity = 1 - 2 * p;
+            drawSlot(a, t, w, h, canvas, bgra, first);
+        } else {
+            second.opacity = 2 * p - 1;
+            drawSlot(b, t, w, h, canvas, bgra, second);
+        }
+        return;
+    case Transition::WipeLeft: // the new clip sweeps in from the right
+        second.clipX0 = int(std::lround(w * (1 - e)));
+        break;
+    case Transition::WipeRight:
+        second.clipX1 = int(std::lround(w * e));
+        break;
+    case Transition::WipeUp:
+        second.clipY0 = int(std::lround(h * (1 - e)));
+        break;
+    case Transition::WipeDown:
+        second.clipY1 = int(std::lround(h * e));
+        break;
+    case Transition::SlideLeft: // the new clip pushes the old one out to the left
+        first.dx = -e * w;
+        second.dx = (1 - e) * w;
+        break;
+    case Transition::SlideRight:
+        first.dx = e * w;
+        second.dx = -(1 - e) * w;
+        break;
+    case Transition::Zoom:
+        second.scale = 0.6 + 0.4 * e;
+        second.opacity = p;
+        break;
+    default:
+        break;
+    }
+    drawSlot(a, t, w, h, canvas, bgra, first);
+    drawSlot(b, t, w, h, canvas, bgra, second);
+}
+
+void Timeline::applyAdjustment(const Clip& c, double t, int w, int h, uint8_t* canvas, bool bgra)
+{
+    // Effects on everything drawn so far. Fades and opacity ease the effect in and out.
+    double strength = c.envelope(t) * c.opacity;
+    if (strength <= 0.0 || !c.effects.any())
+        return;
+    m_layer.assign(canvas, canvas + size_t(w) * h * 4);
+    applyEffects(m_layer.data(), w, h, c.effects, bgra, m_fx);
+    if (strength >= 1.0) {
+        std::memcpy(canvas, m_layer.data(), m_layer.size());
+        return;
+    }
+    for (int row = 0; row < h; ++row)
+        blendRow(canvas + size_t(row) * w * 4, m_layer.data() + size_t(row) * w * 4, w, strength);
+}
+
+void Timeline::applyTransitionBlock(const Clip& c, double t, int w, int h, uint8_t* canvas)
+{
+    // A transition with no cut: the picture so far is one side, black is the other.
+    // In = black -> picture, Out = picture -> black, Through = out to black and straight back in.
+    double p = std::clamp((t - c.start) / c.duration, 0.0, 1.0);
+    bool arriving = true;
+    switch (c.part) {
+    case Clip::Part::In: break;
+    case Clip::Part::Out: arriving = false; break;
+    case Clip::Part::Through:
+        arriving = p >= 0.5;
+        p = arriving ? 2 * p - 1 : 2 * p;
+        break;
+    }
+    double e = smooth(p);
+
+    // Where the picture ends up: shifted, zoomed, cropped and/or faded over black
+    double opacity = 1.0, dx = 0.0, dy = 0.0, scale = 1.0;
+    int x0 = 0, y0 = 0, x1 = w, y1 = h;
+    switch (c.transition) {
+    case Transition::Dissolve:
+    case Transition::FadeBlack:
+        opacity = arriving ? p : 1 - p;
+        break;
+    case Transition::WipeLeft: // sweeps in from the right (or black sweeps over it from the right)
+        if (arriving) x0 = int(std::lround(w * (1 - e)));
+        else x1 = int(std::lround(w * (1 - e)));
+        break;
+    case Transition::WipeRight:
+        if (arriving) x1 = int(std::lround(w * e));
+        else x0 = int(std::lround(w * e));
+        break;
+    case Transition::WipeUp:
+        if (arriving) y0 = int(std::lround(h * (1 - e)));
+        else y1 = int(std::lround(h * (1 - e)));
+        break;
+    case Transition::WipeDown:
+        if (arriving) y1 = int(std::lround(h * e));
+        else y0 = int(std::lround(h * e));
+        break;
+    case Transition::SlideLeft: // leaves to the left, arrives from the right
+        dx = arriving ? (1 - e) * w : -e * w;
+        break;
+    case Transition::SlideRight:
+        dx = arriving ? -(1 - e) * w : e * w;
+        break;
+    case Transition::Zoom: // flies in from small, leaves by zooming right past you
+        scale = arriving ? 0.6 + 0.4 * e : 1.0 + 0.5 * e;
+        opacity = arriving ? p : 1 - p;
+        break;
+    default:
+        return;
+    }
+    if (opacity >= 1.0 && dx == 0.0 && dy == 0.0 && scale == 1.0 && x0 == 0 && y0 == 0 && x1 == w && y1 == h)
+        return; // nothing to do this frame
+
+    m_layer.assign(canvas, canvas + size_t(w) * h * 4);
+    const uint32_t black = 0xFF000000u;
+    std::fill_n(reinterpret_cast<uint32_t*>(canvas), size_t(w) * h, black);
+    if (opacity <= 0.0)
+        return;
+
+    const uint32_t* src = reinterpret_cast<const uint32_t*>(m_layer.data());
+    std::vector<uint32_t>& row = m_rowScratch;
+    row.resize(size_t(w));
+    for (int y = y0; y < y1; ++y) {
+        // Which row of the picture lands here (zooming around the middle)
+        int sy = int(std::floor((y - dy - h / 2.0) / scale + h / 2.0));
+        if (sy < 0 || sy >= h)
+            continue;
+        int from = w, to = 0;
+        for (int x = x0; x < x1; ++x) {
+            int sx = int(std::floor((x - dx - w / 2.0) / scale + w / 2.0));
+            if (sx < 0 || sx >= w)
+                continue;
+            row[size_t(x)] = src[size_t(sy) * w + sx];
+            from = std::min(from, x);
+            to = x + 1;
+        }
+        if (from >= to)
+            continue;
+        uint8_t* dst = canvas + (size_t(y) * w + from) * 4;
+        if (opacity >= 1.0)
+            std::memcpy(dst, row.data() + from, size_t(to - from) * 4);
+        else
+            blendRow(dst, reinterpret_cast<const uint8_t*>(row.data() + from), to - from, opacity);
+    }
+}
+
 void Timeline::renderVideo(double t, int w, int h, uint8_t* rgba, bool bgra)
 {
     closeIdleVideo(t);
@@ -241,81 +564,34 @@ void Timeline::renderVideo(double t, int w, int h, uint8_t* rgba, bool bgra)
     const uint32_t black = 0xFF000000u; // R G B A = 0 0 0 255 in memory
     std::fill_n(reinterpret_cast<uint32_t*>(rgba), size_t(w) * h, black);
 
+    // What's on screen right now: single clips, and pairs that are mid-transition
+    struct Item {
+        Slot* slot;
+        Slot* from; // set when this is a transition from `from` into `slot`
+    };
+    std::vector<Item> items;
+    for (Slot& s : m_slots) {
+        const Clip& c = s.clip;
+        if (!c.useVideo)
+            continue;
+        if (s.prev >= 0 && t >= c.blendInFrom && t < c.blendInTo)
+            items.push_back({ &s, &m_slots[size_t(s.prev)] });
+        else if (c.activeAt(t) && !(s.next >= 0 && t >= c.blendOutFrom))
+            items.push_back({ &s, nullptr }); // (the end of a clip leading into a transition gets drawn by that transition)
+    }
     // Bottom layer first, so the top one ends up painted over everything else
-    std::vector<Slot*> active;
-    for (Slot& s : m_slots)
-        if (s.clip.useVideo && s.clip.activeAt(t))
-            active.push_back(&s);
-    std::stable_sort(active.begin(), active.end(),
-                     [](const Slot* a, const Slot* b) { return a->clip.layer < b->clip.layer; });
+    std::stable_sort(items.begin(), items.end(),
+                     [](const Item& a, const Item& b) { return a.slot->clip.layer < b.slot->clip.layer; });
 
-    for (Slot* s : active) {
-        VideoReader* reader = videoFor(*s, t);
-        if (!reader)
-            continue;
-        const Clip& c = s->clip;
-        const AVFrame* frame = reader->frameAt(c.sourceTime(t));
-        if (!frame || frame->width <= 0 || frame->height <= 0)
-            continue;
-
-        // Fit inside the canvas keeping the shape (black bars if it doesn't match),
-        // then the clip's own size and position on top (picture-in-picture)
-        double fit = std::min(double(w) / frame->width, double(h) / frame->height);
-        double size = std::clamp(double(c.scale), 0.05, 4.0);
-        int fw = std::max(1, int(std::lround(frame->width * fit * size)));
-        int fh = std::max(1, int(std::lround(frame->height * fit * size)));
-        int x = (w - fw) / 2 + int(std::lround(c.posX * w));
-        int y = (h - fh) / 2 + int(std::lround(c.posY * h));
-
-        // Solid and fully faded in? Paint it straight on. Otherwise mix it with what's underneath.
-        double opacity = c.envelope(t) * c.opacity;
-        if (opacity <= 0.0)
-            continue;
-        bool solid = opacity >= 1.0 && !hasAlpha(frame);
-        bool fillsFrame = fw == w && fh == h && x == 0 && y == 0;
-        bool effects = c.effects.any();
-        const uint8_t* pixels = nullptr;
-        if (reader->isStill()) {
-            // Pictures never change, so scale once and reuse it until the size changes
-            if (s->still.empty() || s->stillW != fw || s->stillH != fh || s->stillBgra != bgra) {
-                s->still.resize(size_t(fw) * fh * 4);
-                if (!reader->scale(frame, fw, fh, s->still.data(), fw * 4, bgra)) {
-                    s->still.clear();
-                    continue;
-                }
-                s->stillW = fw;
-                s->stillH = fh;
-                s->stillBgra = bgra;
-            }
-            pixels = s->still.data();
-        } else if (solid && fillsFrame && !effects) {
-            reader->scale(frame, w, h, rgba, w * 4, bgra);
-            continue;
-        } else {
-            m_scratch.resize(size_t(fw) * fh * 4);
-            if (!reader->scale(frame, fw, fh, m_scratch.data(), fw * 4, bgra))
-                continue;
-            pixels = m_scratch.data();
-        }
-
-        if (effects) {
-            // Work on a copy, so a cached still picture stays untouched
-            m_layer.assign(pixels, pixels + size_t(fw) * fh * 4);
-            applyEffects(m_layer.data(), fw, fh, c.effects, bgra, m_fx);
-            pixels = m_layer.data();
-        }
-
-        // Only the part that's actually on screen (a moved clip can hang off the edge)
-        int x0 = std::max(0, x), x1 = std::min(w, x + fw);
-        int y0 = std::max(0, y), y1 = std::min(h, y + fh);
-        for (int row = y0; row < y1; ++row) {
-            uint8_t* dst = rgba + (size_t(row) * w + x0) * 4;
-            const uint8_t* src = pixels + (size_t(row - y) * fw + (x0 - x)) * 4;
-            if (solid)
-                std::memcpy(dst, src, size_t(x1 - x0) * 4);
-            else
-                blendRow(dst, src, x1 - x0, opacity);
-        }
+    for (const Item& item : items) {
+        if (item.slot->clip.kind == Clip::Kind::Adjustment)
+            applyAdjustment(item.slot->clip, t, w, h, rgba, bgra);
+        else if (item.slot->clip.kind == Clip::Kind::Transition)
+            applyTransitionBlock(item.slot->clip, t, w, h, rgba);
+        else if (item.from)
+            drawTransition(*item.from, *item.slot, t, w, h, rgba, bgra);
+        else
+            drawSlot(*item.slot, t, w, h, rgba, bgra, {});
     }
 }
 
@@ -327,7 +603,9 @@ void Timeline::renderAudio(double t, int frames, float* out)
 
     for (Slot& s : m_slots) {
         const Clip& c = s.clip;
-        if (!c.useAudio || c.end() <= t || c.start >= windowEnd)
+        // (a transition borrows a little sound either side of the clip, for a crossfade)
+        const double from0 = c.start - c.preRoll, to0 = c.end() + c.postRoll;
+        if (!c.useAudio || to0 <= t || from0 >= windowEnd)
             continue;
         AudioReader* reader = audioFor(s, t);
         if (!reader)
@@ -335,8 +613,8 @@ void Timeline::renderAudio(double t, int frames, float* out)
 
         // Which part of this chunk does the clip cover?
         // (worked out as doubles first so a really long clip can't overflow an int)
-        int from = int(std::clamp(std::ceil((c.start - t) * AudioRate), 0.0, double(frames)));
-        int to = int(std::clamp(std::floor((c.end() - t) * AudioRate), 0.0, double(frames)));
+        int from = int(std::clamp(std::ceil((from0 - t) * AudioRate), 0.0, double(frames)));
+        int to = int(std::clamp(std::floor((to0 - t) * AudioRate), 0.0, double(frames)));
         if (to <= from)
             continue;
 
@@ -362,11 +640,18 @@ void Timeline::renderAudio(double t, int frames, float* out)
         }
         // Volume, with the fades worked out sample by sample so they're smooth
         float* dst = out + size_t(from) * AudioChannels;
-        bool fading = c.fadeIn > 0 || c.fadeOut > 0;
+        bool blendsIn = c.blendInTo > c.blendInFrom, blendsOut = c.blendOutTo > c.blendOutFrom;
+        bool fading = c.fadeIn > 0 || c.fadeOut > 0 || blendsIn || blendsOut;
         for (int i = 0; i < n; ++i) {
             float gain = c.volume;
-            if (fading)
-                gain *= float(c.envelope(t + double(from + i) / AudioRate));
+            if (fading) {
+                double when = t + double(from + i) / AudioRate;
+                gain *= float(c.envelope(std::clamp(when, c.start, c.end())));
+                if (blendsIn && when < c.blendInTo) // crossfading in from the clip before
+                    gain *= float(std::clamp((when - c.blendInFrom) / (c.blendInTo - c.blendInFrom), 0.0, 1.0));
+                if (blendsOut && when > c.blendOutFrom) // crossfading out into the clip after
+                    gain *= float(std::clamp((c.blendOutTo - when) / (c.blendOutTo - c.blendOutFrom), 0.0, 1.0));
+            }
             dst[i * 2] += m_mix[i * 2] * gain;
             dst[i * 2 + 1] += m_mix[i * 2 + 1] * gain;
         }
@@ -398,6 +683,10 @@ bool Timeline::copyPlan(std::string& source, std::vector<CopySegment>& segments,
     constexpr double eps = 0.002;
     for (const Slot& s : m_slots) {
         const Clip& c = s.clip;
+        if (c.kind != Clip::Kind::Media) {
+            why = "Effects and transitions need a normal export.";
+            return false;
+        }
         if (source.empty())
             source = c.path;
         else if (c.path != source) {

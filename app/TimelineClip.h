@@ -20,8 +20,19 @@ struct TitleStyle {
     bool operator==(const TitleStyle&) const = default;
 };
 
+// A row on the timeline. FX tracks hold titles, effects and transitions; the rest hold footage and sound.
+struct TimelineTrack {
+    enum class Kind { Fx, Video, Audio };
+    QString name;
+    Kind kind = Kind::Video;
+
+    bool operator==(const TimelineTrack&) const = default;
+};
+
 struct TimelineClip {
-    enum class Kind { Media, Title };
+    // Media = a file. Title = text. Effect = a filter over everything below it.
+    // Transition = a little block sitting on a cut, blending the clips either side.
+    enum class Kind { Media, Title, Effect, Transition };
 
     Kind kind = Kind::Media;
     QString path;
@@ -57,10 +68,20 @@ struct TimelineClip {
     float brightness = 0, contrast = 0, saturation = 0, temperature = 0;
     float blur = 0, sharpen = 0, vignette = 0;
 
+    // Transition from the clip ending right where this one starts (VE_TRANSITION_*)
+    int transition = 0;
+    double transitionDuration = 1.0;
+    // How it arrives and leaves (VE_ANIM_*)
+    int animIn = 0, animOut = 0;
+    double animInDuration = 0.5, animOutDuration = 0.5;
+
     TitleStyle title;     // only for Kind::Title
 
     double end() const { return start + duration; }
     bool isTitle() const { return kind == Kind::Title; }
+    bool isEffect() const { return kind == Kind::Effect; }
+    bool isTransition() const { return kind == Kind::Transition; }
+    bool belongsOnFx() const { return isTitle() || isEffect() || isTransition(); }
     bool showsVideo() const { return (hasVideo || isTitle()) && videoOn; }
     bool playsAudio() const { return hasAudio && audioOn; }
     bool audioOnly() const { return playsAudio() && !showsVideo(); }
@@ -83,7 +104,8 @@ inline QDataStream& operator<<(QDataStream& out, const TimelineClip& c)
                << c.videoOn << c.audioOn << c.volume << c.fadeIn << c.fadeOut
                << c.title.text << c.title.size << c.title.color << c.title.y << c.title.box << c.title.bold
                << c.speed << c.opacity << c.scale << c.posX << c.posY << c.look << c.brightness << c.contrast
-               << c.saturation << c.temperature << c.blur << c.sharpen << c.vignette;
+               << c.saturation << c.temperature << c.blur << c.sharpen << c.vignette
+               << c.transition << c.transitionDuration << c.animIn << c.animInDuration << c.animOut << c.animOutDuration;
 }
 
 inline QDataStream& operator>>(QDataStream& in, TimelineClip& c)
@@ -94,7 +116,8 @@ inline QDataStream& operator>>(QDataStream& in, TimelineClip& c)
        >> c.videoOn >> c.audioOn >> c.volume >> c.fadeIn >> c.fadeOut
        >> c.title.text >> c.title.size >> c.title.color >> c.title.y >> c.title.box >> c.title.bold
        >> c.speed >> c.opacity >> c.scale >> c.posX >> c.posY >> c.look >> c.brightness >> c.contrast
-       >> c.saturation >> c.temperature >> c.blur >> c.sharpen >> c.vignette;
+       >> c.saturation >> c.temperature >> c.blur >> c.sharpen >> c.vignette
+       >> c.transition >> c.transitionDuration >> c.animIn >> c.animInDuration >> c.animOut >> c.animOutDuration;
     c.kind = TimelineClip::Kind(kind);
     return in;
 }

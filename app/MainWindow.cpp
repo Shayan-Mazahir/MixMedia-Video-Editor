@@ -8,6 +8,8 @@
 #include "PreviewRenderer.h"
 #include "PreviewWidget.h"
 #include "TimelineWidget.h"
+#include "ClipPresets.h"
+#include "LibraryPanel.h"
 #include "TitleRenderer.h"
 #include "ClipInspector.h"
 #include "ProjectFile.h"
@@ -42,6 +44,7 @@
 #include <QProgressDialog>
 #include <QPushButton>
 #include <QSplitter>
+#include <QTabWidget>
 #include <QStandardPaths>
 #include <QStatusBar>
 #include <QThread>
@@ -139,7 +142,22 @@ MainWindow::MainWindow(QWidget* parent)
     m_inspector->setMinimumWidth(310);
 
     auto* top = new QSplitter(Qt::Horizontal);
-    top->addWidget(buildMediaPanel());
+    // Left side: tabs for media and transitions
+    auto* library = new QTabWidget;
+    library->setDocumentMode(true);
+    library->addTab(buildMediaPanel(), "Media");
+    // Ready-made blocks for the FX tracks: drag them on, or double-click to drop one at the playhead
+    struct Tab {
+        const char* name;
+        QList<TimelineClip> items;
+    };
+    for (const Tab& tab : { Tab { "Titles", titlePresets() }, Tab { "Effects", effectPresets() },
+                            Tab { "Transitions", transitionPresets() } }) {
+        auto* panel = new LibraryPanel(tab.items);
+        library->addTab(panel, tab.name);
+        connect(panel, &LibraryPanel::addAtPlayhead, m_timeline, &TimelineWidget::addAtPlayhead);
+    }
+    top->addWidget(library);
     top->addWidget(buildPreviewPanel());
     top->addWidget(m_inspector);
     top->setStretchFactor(0, 2);
@@ -278,11 +296,7 @@ QWidget* MainWindow::buildMediaPanel()
 {
     auto* panel = new QWidget;
     auto* layout = new QVBoxLayout(panel);
-    layout->setContentsMargins(8, 8, 4, 8);
-
-    auto* title = new QLabel("Media");
-    title->setStyleSheet("font-weight: bold;");
-    layout->addWidget(title);
+    layout->setContentsMargins(0, 0, 0, 0);
 
     m_mediaBin = new MediaBin;
     m_mediaBin->setIconSize(QSize(ThumbW, ThumbH));
@@ -538,7 +552,7 @@ void MainWindow::refreshInspector()
 {
     int i = m_timeline->selectedIndex();
     if (i >= 0 && i < m_timeline->clips().size())
-        m_inspector->showClip(i, m_timeline->clips().at(i));
+        m_inspector->showClip(i, m_timeline->clips().at(i), m_timeline->transitionPart(m_timeline->clips().at(i)));
     else
         m_inspector->showClip(-1, {});
 }
@@ -586,7 +600,7 @@ void MainWindow::newProject()
     stopPlayback();
     m_loadingProject = true;
     m_mediaBin->clear();
-    m_timeline->setClips({});
+    m_timeline->setClips({}, TimelineWidget::defaultTracks());
     m_timeline->setPlayhead(0);
     m_loadingProject = false;
     m_projectPath.clear();
@@ -625,7 +639,7 @@ bool MainWindow::loadProject(const QString& path)
     for (TimelineClip& c : data.clips)
         c.thumb = thumbs.value(c.path);
 
-    m_timeline->setClips(data.clips);
+    m_timeline->setClips(data.clips, data.tracks);
     m_timeline->setPlayhead(data.playhead);
     onPlayheadMoved(data.playhead);
     m_loadingProject = false;
@@ -648,6 +662,7 @@ bool MainWindow::saveProject()
     for (int i = 0; i < m_mediaBin->count(); ++i)
         data.media << m_mediaBin->item(i)->data(MediaBin::PathRole).toString();
     data.clips = m_timeline->clips();
+    data.tracks = m_timeline->tracks();
     data.playhead = m_timeline->playhead();
 
     QString error;
@@ -958,12 +973,45 @@ void MainWindow::runDemo(const QStringList& paths, const QString& screenshotPath
     video.look = 4; // vivid
     video.vignette = 0.4f;
     m_timeline->updateClip(0, video, "demoFx");
+
+    // A cut with a dissolve across it, and the title sliding up into place
+    double cut = m_timeline->playhead() - 1.0;
     m_timeline->selectClip(0);
+    m_timeline->setPlayhead(cut);
+    m_timeline->splitAtPlayhead();
+    int after = m_timeline->selectedIndex();
+    m_timeline->setTransition(after, VE_TRANSITION_DISSOLVE); // a transition block on the cut
+    int block = m_timeline->selectedIndex();
+    TimelineClip dissolve = m_timeline->clips().at(block);
+    dissolve.duration = 2.0; // the clips slide to make a 2 second overlap
+    m_timeline->updateClip(block, dissolve, "demoTransition");
+    // ...and a Vintage effect block over a stretch of it, on the FX track above
+    TimelineClip vintage = effectPresets().at(2);
+    vintage.duration = 30.0;
+    m_timeline->setPlayhead(cut - 10.0);
+    m_timeline->addAtPlayhead(vintage);
+    // ...and a zoom with no cut at all, playing on the spot
+    m_timeline->setPlayhead(cut + 4.0);
+    m_timeline->addAtPlayhead(transitionPresets().last());
+    title = m_timeline->clips().at(t);
+    title.animIn = VE_ANIM_SLIDE_UP;
+    title.animInDuration = 1.0;
+    m_timeline->updateClip(t, title, "demoAnim");
+    m_timeline->selectClip(after);
+    m_timeline->setPlayhead(cut - 1.0); // halfway through the overlap
+    onPlayheadMoved(cut - 1.0);
 
     // Let things load, play for 2 seconds, then take the picture
     // MIXMEDIA_DEMO_WAIT=ms adds extra time before playing (to let slow background work finish)
     int wait = qEnvironmentVariableIntValue("MIXMEDIA_DEMO_WAIT");
     QTimer::singleShot(1500 + wait, this, [this] {
+        if (qEnvironmentVariableIsSet("MIXMEDIA_DEMO_STILL")) {
+            // Stay put (mid-transition) and show the Transitions tab instead of playing
+            if (auto* tabs = findChild<QTabWidget*>())
+                tabs->setCurrentIndex(2); // Effects
+            m_timeline->zoomBy(60); // close up around the playhead
+            return;
+        }
         qInfo("demo: playing from %.3f", m_timeline->playhead());
         startPlayback();
     });

@@ -26,8 +26,8 @@ class ClipInspector : public QWidget {
 public:
     explicit ClipInspector(QWidget* parent = nullptr);
 
-    // index -1 = nothing selected
-    void showClip(int index, const TimelineClip& clip);
+    // index -1 = nothing selected. part = (for transition blocks) VE_PART_*, or -1 when it's on a cut.
+    void showClip(int index, const TimelineClip& clip, int part = -1);
 
 signals:
     // `what` names the setting, so the timeline can merge slider drags into one undo step
@@ -70,6 +70,7 @@ private:
 
     QGroupBox* m_effectsBox;
     QComboBox* m_look;
+    NumberSlider* m_strength; // for effect blocks: how strongly they apply
     NumberSlider *m_brightness, *m_contrast, *m_saturation, *m_temperature, *m_blur, *m_sharpen, *m_vignette;
 
     QGroupBox* m_placeBox;
@@ -78,6 +79,17 @@ private:
     QGroupBox* m_soundBox;
     NumberSlider* m_volume;
     QPushButton* m_detach;
+
+    QGroupBox* m_transitionBox;
+    QComboBox* m_transition;
+    NumberSlider* m_transitionDuration;
+    QLabel* m_transitionHint;
+
+    QGroupBox* m_animBox;
+    QComboBox* m_animIn;
+    QComboBox* m_animOut;
+    NumberSlider* m_animInDuration;
+    NumberSlider* m_animOutDuration;
 
     QGroupBox* m_fadeBox;
     QDoubleSpinBox* m_fadeIn;

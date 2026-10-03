@@ -3,6 +3,7 @@
 
 #include "TimelineWidget.h"
 #include "FilmstripCache.h"
+#include "ClipPresets.h"
 #include "MediaBin.h"
 #include "WaveformCache.h"
 
@@ -30,6 +31,9 @@ const QColor Accent(0x2f, 0xc6, 0xb4);
 const QColor VideoClip(0x2a, 0x5d, 0x7a);
 const QColor AudioClip(0x2e, 0x6b, 0x4f);
 const QColor TitleClip(0x6a, 0x4c, 0x9c);
+const QColor EffectClip(0x8a, 0x66, 0x1c);
+const QColor TransitionClip(0x3d, 0x6f, 0xa8);
+const QColor FxTrackBg(0x1f, 0x1c, 0x19);
 const QColor Playhead(0xff, 0x4d, 0x4d);
 
 constexpr double MinClipSeconds = 0.1;
@@ -85,19 +89,54 @@ TimelineWidget::TimelineWidget(QWidget* parent)
 
 QSize TimelineWidget::sizeHint() const
 {
-    return { 800, RulerHeight + TrackHeight * int(m_tracks.size()) + 20 };
+    return { 800, tracksBottom() + 20 };
+}
+
+QList<TimelineTrack> TimelineWidget::defaultTracks()
+{
+    using K = TimelineTrack::Kind;
+    return { { "FX 2", K::Fx }, { "FX 1", K::Fx }, { "Video 2", K::Video },
+             { "Video 1", K::Video }, { "Audio 1", K::Audio }, { "Audio 2", K::Audio } };
 }
 
 QList<RenderClip> TimelineWidget::renderClips(const std::function<QString(const TimelineClip&)>& titleImage) const
 {
+    // Transition blocks aren't drawn themselves: they tell the clip overlapping the end of the
+    // one before to blend in from it (and its detached sound to crossfade)
+    QHash<int, const TimelineClip*> transitionInto;
+    for (const TimelineClip& t : m_clips) {
+        int before = -1, after = -1;
+        if (t.isTransition() && transitionPair(t, &before, &after))
+            for (int i : partnersOf(after))
+                transitionInto.insert(i, &t);
+    }
+
     QList<RenderClip> out;
-    for (const TimelineClip& c : m_clips) {
+    for (int i = 0; i < m_clips.size(); ++i) {
+        const TimelineClip& c = m_clips[i];
+        if (c.isTransition()) {
+            // Not on a cut: it plays on everything below it instead, like an effect block
+            int part = transitionPart(c);
+            if (part < 0)
+                continue;
+            RenderClip r;
+            r.kind = VE_CLIP_TRANSITION;
+            r.start = c.start;
+            r.duration = c.duration;
+            r.audio = false;
+            r.transition = c.transition;
+            r.part = part;
+            r.layer = int(m_tracks.size()) - c.track;
+            out << r;
+            continue;
+        }
         RenderClip r;
+        r.kind = c.isEffect() ? VE_CLIP_ADJUSTMENT : VE_CLIP_MEDIA;
         r.path = c.isTitle() && titleImage ? titleImage(c) : c.path;
         r.start = c.start;
-        r.in = c.isTitle() ? 0.0 : c.in;
+        r.in = c.isTitle() || c.isEffect() ? 0.0 : c.in;
         r.duration = c.duration;
-        r.video = c.showsVideo() && !m_tracks[c.track].audio;
+        r.video = c.isEffect() || (c.showsVideo() && m_tracks[c.track].kind != TimelineTrack::Kind::Audio);
         r.audio = c.playsAudio();
         r.volume = c.volume;
         r.fadeIn = c.fadeIn;
@@ -115,22 +154,129 @@ QList<RenderClip> TimelineWidget::renderClips(const std::function<QString(const 
         r.blur = c.blur;
         r.sharpen = c.sharpen;
         r.vignette = c.vignette;
-        // Tracks higher up the list sit on top in the picture
+        if (const TimelineClip* t = transitionInto.value(i)) {
+            r.transition = t->transition;
+            r.transitionDuration = t->duration;
+        }
+        r.animIn = c.animIn;
+        r.animInDuration = c.animInDuration;
+        r.animOut = c.animOut;
+        r.animOutDuration = c.animOutDuration;
+        // Tracks higher up the list sit on top in the picture (and effects apply in that order)
         r.layer = int(m_tracks.size()) - c.track;
-        if (!r.path.isEmpty())
+        if (!r.path.isEmpty() || c.isEffect())
             out << r;
     }
     return out;
 }
 
-void TimelineWidget::setClips(const QList<TimelineClip>& clips)
+void TimelineWidget::setClips(const QList<TimelineClip>& clips, const QList<TimelineTrack>& tracks)
 {
     m_clips = clips;
+    if (tracks.isEmpty()) {
+        upgradeOldProject();
+    } else {
+        m_tracks = tracks;
+    }
     m_undo.clear();
     m_redo.clear();
     select(-1);
     zoomToFit();
     changed();
+}
+
+void TimelineWidget::upgradeOldProject()
+{
+    // Older projects had no FX tracks: add them on top, and move every clip down to match
+    m_tracks = defaultTracks();
+    const int added = 2;
+    for (TimelineClip& c : m_clips)
+        c.track = std::min<int>(c.track + added, m_tracks.size() - 1);
+
+    // ...and kept transitions on the clips themselves. They become overlap transitions now.
+    struct Old { double cut; int type; double length; };
+    QList<Old> old;
+    for (TimelineClip& c : m_clips) {
+        if (c.kind == TimelineClip::Kind::Media && c.transition != 0
+            && m_tracks[c.track].kind == TimelineTrack::Kind::Video)
+            old << Old { c.start, c.transition, c.transitionDuration };
+        c.transition = 0;
+    }
+    // Last cut first, so the earlier cuts don't move while we work
+    std::sort(old.begin(), old.end(), [](const Old& x, const Old& y) { return x.cut > y.cut; });
+    for (const Old& o : old) {
+        double cut = 0;
+        if (nearestCut(o.cut, &cut) && std::abs(cut - o.cut) < 0.01)
+            applyTransition(makeTransitionClip(o.type, o.length), cut, 1);
+    }
+}
+
+void TimelineWidget::addTrack(TimelineTrack::Kind kind, int at)
+{
+    m_undo << Snapshot { m_clips, m_tracks };
+    m_redo.clear();
+    insertTrack(kind, at);
+    changed();
+}
+
+int TimelineWidget::insertTrack(TimelineTrack::Kind kind, int at)
+{
+    using K = TimelineTrack::Kind;
+    // Count how many of this kind there are, so it gets the next number
+    int count = 0;
+    for (const TimelineTrack& t : m_tracks)
+        count += t.kind == kind;
+    QString base = kind == K::Fx ? "FX" : kind == K::Video ? "Video" : "Audio";
+    TimelineTrack track { QString("%1 %2").arg(base).arg(count + 1), kind };
+
+    // New FX and video tracks go on top of their group, audio at the bottom of its group
+    if (at < 0 || at > m_tracks.size()) {
+        int first = -1, last = -1, lastFx = -1;
+        for (int i = 0; i < m_tracks.size(); ++i) {
+            if (m_tracks[i].kind == kind) {
+                if (first < 0)
+                    first = i;
+                last = i;
+            }
+            if (m_tracks[i].kind == K::Fx)
+                lastFx = i;
+        }
+        if (kind == K::Audio)
+            at = last >= 0 ? last + 1 : int(m_tracks.size());
+        else if (first >= 0)
+            at = first;
+        else
+            at = kind == K::Fx ? 0 : lastFx + 1;
+    }
+
+    m_tracks.insert(at, track);
+    for (TimelineClip& c : m_clips)
+        if (c.track >= at)
+            ++c.track;
+    return at;
+}
+
+bool TimelineWidget::removeTrack(int index)
+{
+    if (index < 0 || index >= m_tracks.size())
+        return false;
+    for (const TimelineClip& c : m_clips)
+        if (c.track == index)
+            return false; // only empty tracks
+    int sameKind = 0;
+    for (const TimelineTrack& t : m_tracks)
+        sameKind += t.kind == m_tracks[index].kind;
+    if (sameKind <= 1)
+        return false; // always keep at least one of each
+
+    m_undo << Snapshot { m_clips, m_tracks };
+    m_redo.clear();
+    m_tracks.removeAt(index);
+    for (TimelineClip& c : m_clips)
+        if (c.track > index)
+            --c.track;
+    changed();
+    return true;
 }
 
 void TimelineWidget::selectClip(int index)
@@ -160,8 +306,101 @@ void TimelineWidget::updateClip(int index, const TimelineClip& clip, const QStri
     m_lastEdit = key;
     m_lastEditClock.restart();
 
-    m_clips[index] = clip;
+    if (clip.isTransition() && m_clips[index].isTransition()) {
+        // Its place comes from the overlap; a new length slides the clips to match
+        double length = clip.duration;
+        TimelineClip& block = m_clips[index];
+        block.transition = clip.transition;
+        block.name = clip.name;
+        if (std::abs(length - block.duration) > 1e-6)
+            resizeTransition(index, length);
+    } else {
+        m_clips[index] = clip;
+    }
     changed();
+}
+
+void TimelineWidget::setTransition(int index, int type)
+{
+    if (index < 0 || index >= m_clips.size())
+        return;
+
+    // Already a transition into this clip? Change it (or take it away with "None")
+    for (int i = 0; i < m_clips.size(); ++i) {
+        int before = -1, after = -1;
+        if (!m_clips[i].isTransition() || !transitionPair(m_clips[i], &before, &after) || after != index)
+            continue;
+        pushUndo(m_clips);
+        if (type == 0) {
+            undoOverlap(i);
+            m_clips.removeAt(i);
+            select(-1);
+        } else {
+            m_clips[i].transition = type;
+            m_clips[i].name = transitionName(type);
+            select(i);
+        }
+        changed();
+        return;
+    }
+    if (type == 0 || !hasClipBefore(index))
+        return;
+
+    const QList<TimelineClip> before = m_clips;
+    const QList<TimelineTrack> tracksBefore = m_tracks;
+    if (!applyTransition(makeTransitionClip(type), m_clips[index].start, -1))
+        return;
+    m_undo << Snapshot { before, tracksBefore };
+    m_redo.clear();
+    select(int(m_clips.size()) - 1);
+    changed();
+}
+
+bool TimelineWidget::isOnCut(const TimelineClip& transition) const
+{
+    int before = -1, after = -1;
+    return transitionPair(transition, &before, &after);
+}
+
+int TimelineWidget::transitionPart(const TimelineClip& block) const
+{
+    if (isOnCut(block))
+        return -1;
+    // Lined up with the start of some footage (with nothing right before it)? It brings it in.
+    // With the end (nothing right after)? It takes it out. Anywhere else it plays on the spot.
+    auto footage = [this](const TimelineClip& c) {
+        return c.kind == TimelineClip::Kind::Media && m_tracks[c.track].kind == TimelineTrack::Kind::Video;
+    };
+    auto touching = [&](int track, double at, bool endingThere) {
+        for (const TimelineClip& o : m_clips)
+            if (footage(o) && o.track == track && std::abs((endingThere ? o.end() : o.start) - at) < 0.01)
+                return true;
+        return false;
+    };
+    constexpr double near = 0.02;
+    for (const TimelineClip& c : m_clips)
+        if (footage(c) && std::abs(c.start - block.start) < near && !touching(c.track, c.start, true))
+            return VE_PART_IN;
+    for (const TimelineClip& c : m_clips)
+        if (footage(c) && std::abs(c.end() - block.end()) < near && !touching(c.track, c.end(), false))
+            return VE_PART_OUT;
+    return VE_PART_THROUGH;
+}
+
+bool TimelineWidget::cutNear(double sec) const
+{
+    // Close enough on screen that it's obviously meant for that cut
+    double cut = 0;
+    return nearestCut(sec, &cut) && std::abs(cut - sec) * m_pixelsPerSecond < 40;
+}
+
+bool TimelineWidget::hasClipBefore(int index) const
+{
+    const TimelineClip& me = m_clips[index];
+    for (int i = 0; i < m_clips.size(); ++i)
+        if (i != index && m_clips[i].track == me.track && std::abs(m_clips[i].end() - me.start) < 0.01)
+            return true;
+    return false;
 }
 
 void TimelineWidget::setClipSpeed(int index, double speed)
@@ -211,7 +450,7 @@ void TimelineWidget::detachAudio()
     sound.thumb = QPixmap();
     sound.track = -1;
     for (int t = 0; t < m_tracks.size() && sound.track < 0; ++t) {
-        if (!m_tracks[t].audio)
+        if (m_tracks[t].kind != TimelineTrack::Kind::Audio)
             continue;
         if (freeStart(m_clips, t, video.start, video.duration) == video.start)
             sound.track = t;
@@ -233,11 +472,54 @@ void TimelineWidget::addTitle()
     title.name = "Title";
     title.duration = 5.0;
     title.hasVideo = true;
-    title.track = 0; // top video track, so it sits over everything
-    title.start = freeStart(m_clips, title.track, m_playhead, title.duration);
+    addAtPlayhead(title);
+}
 
-    pushUndo(m_clips);
-    m_clips << title;
+void TimelineWidget::addAtPlayhead(const TimelineClip& prototype)
+{
+    TimelineClip clip = prototype;
+    const Snapshot before { m_clips, m_tracks };
+
+    if (clip.isTransition() && cutNear(m_playhead)) {
+        // Playhead on a cut: the clips overlap and blend across it. (Anywhere else it's
+        // placed like an effect block and plays on the spot.)
+        if (!applyTransition(clip, m_playhead, -1))
+            return;
+        m_undo << before;
+        m_redo.clear();
+        select(int(m_clips.size()) - 1);
+        changed();
+        return;
+    }
+    {
+        // Right at the playhead, on the closest track of the right kind that's free there
+        int home = pickTrack(homeTrack(clip), clip);
+        if (home < 0)
+            return;
+        int best = -1;
+        for (int i = 0; i < m_tracks.size(); ++i) {
+            if (m_tracks[i].kind != m_tracks[home].kind || freeStart(m_clips, i, m_playhead, clip.duration) != m_playhead)
+                continue;
+            if (best < 0 || std::abs(i - home) < std::abs(best - home))
+                best = i;
+        }
+        if (best < 0 && clip.belongsOnFx()) {
+            // Things already stacked up there: a fresh FX track on top keeps it at the playhead
+            best = insertTrack(TimelineTrack::Kind::Fx, -1);
+        }
+        if (best >= 0) {
+            clip.track = best;
+            clip.start = m_playhead;
+        } else {
+            clip.track = home;
+            clip.start = freeStart(m_clips, home, m_playhead, clip.duration); // footage: next free spot
+        }
+    }
+    m_undo << before; // one undo step, even if a track got added
+    if (m_undo.size() > MaxUndo)
+        m_undo.removeFirst();
+    m_redo.clear();
+    m_clips << clip;
     select(int(m_clips.size()) - 1);
     changed();
 }
@@ -300,7 +582,7 @@ void TimelineWidget::appendClips(const QList<TimelineClip>& clips)
     bool wasEmpty = m_clips.isEmpty();
 
     for (TimelineClip clip : clips) {
-        clip.track = pickTrack(1, clip.audioOnly());
+        clip.track = pickTrack(homeTrack(clip), clip);
         if (clip.track < 0)
             continue;
         double end = 0.0;
@@ -333,9 +615,27 @@ QRect TimelineWidget::contentRect() const
     return QRect(HeaderWidth, 0, width() - HeaderWidth, height());
 }
 
+int TimelineWidget::trackHeight(int track) const
+{
+    return m_tracks[track].kind == TimelineTrack::Kind::Fx ? FxTrackHeight : TrackHeight;
+}
+
+int TimelineWidget::trackTop(int track) const
+{
+    int y = RulerHeight;
+    for (int i = 0; i < track; ++i)
+        y += trackHeight(i);
+    return y;
+}
+
+int TimelineWidget::tracksBottom() const
+{
+    return trackTop(int(m_tracks.size()));
+}
+
 QRect TimelineWidget::trackRect(int track) const
 {
-    return QRect(HeaderWidth, RulerHeight + track * TrackHeight, width() - HeaderWidth, TrackHeight);
+    return QRect(HeaderWidth, trackTop(track), width() - HeaderWidth, trackHeight(track));
 }
 
 QRectF TimelineWidget::clipRect(const TimelineClip& clip) const
@@ -346,10 +646,33 @@ QRectF TimelineWidget::clipRect(const TimelineClip& clip) const
 
 int TimelineWidget::trackAt(int y) const
 {
-    int i = (y - RulerHeight) / TrackHeight;
-    if (y < RulerHeight || i >= m_tracks.size())
+    if (y < RulerHeight)
         return -1;
-    return i;
+    for (int i = 0; i < m_tracks.size(); ++i)
+        if (y < trackTop(i) + trackHeight(i))
+            return i;
+    return -1;
+}
+
+int TimelineWidget::homeTrack(const TimelineClip& clip) const
+{
+    // Where things go when you don't say: titles/effects on the lowest FX track, the rest by the main video
+    if (clip.belongsOnFx()) {
+        for (int i = int(m_tracks.size()) - 1; i >= 0; --i)
+            if (m_tracks[i].kind == TimelineTrack::Kind::Fx)
+                return i;
+    }
+    return mainVideoTrack();
+}
+
+int TimelineWidget::mainVideoTrack() const
+{
+    // The bottom video track: where footage goes by default
+    int found = 0;
+    for (int i = 0; i < m_tracks.size(); ++i)
+        if (m_tracks[i].kind == TimelineTrack::Kind::Video)
+            found = i;
+    return found;
 }
 
 int TimelineWidget::clipAt(const QPoint& pos) const
@@ -376,20 +699,177 @@ TimelineWidget::Edge TimelineWidget::edgeAt(int clip, const QPoint& pos) const
 
 // ---- Placement ----
 
-int TimelineWidget::pickTrack(int wanted, bool audioOnly) const
+bool TimelineWidget::accepts(int track, const TimelineClip& clip) const
 {
-    if (wanted >= 0 && wanted < m_tracks.size() && m_tracks[wanted].audio == audioOnly)
+    using K = TimelineTrack::Kind;
+    if (track < 0 || track >= m_tracks.size())
+        return false;
+    switch (m_tracks[track].kind) {
+    case K::Fx: return clip.belongsOnFx();
+    case K::Video: return (clip.showsVideo() && !clip.belongsOnFx()) || clip.isTitle(); // titles are fine here too
+    case K::Audio: return clip.audioOnly();
+    }
+    return false;
+}
+
+int TimelineWidget::pickTrack(int wanted, const TimelineClip& clip) const
+{
+    if (accepts(wanted, clip))
         return wanted;
 
     // Wrong kind of track - find the closest one that fits
     int best = -1;
     for (int i = 0; i < m_tracks.size(); ++i) {
-        if (m_tracks[i].audio != audioOnly)
-            continue;
+        if (!accepts(i, clip) || (clip.isTitle() && m_tracks[i].kind != TimelineTrack::Kind::Fx))
+            continue; // (titles only go on video tracks if you put them there on purpose)
         if (best < 0 || std::abs(i - wanted) < std::abs(best - wanted))
             best = i;
     }
     return best;
+}
+
+bool TimelineWidget::nearestCut(double sec, double* cut, int* before, int* after) const
+{
+    // A cut = one clip ending exactly where another starts, on the same video track
+    bool found = false;
+    for (int j = 0; j < m_clips.size(); ++j) {
+        const TimelineClip& b = m_clips[j];
+        if (b.kind != TimelineClip::Kind::Media || m_tracks[b.track].kind != TimelineTrack::Kind::Video)
+            continue;
+        for (int i = 0; i < m_clips.size(); ++i) {
+            const TimelineClip& a = m_clips[i];
+            if (i == j || a.track != b.track || std::abs(a.end() - b.start) > 0.01)
+                continue;
+            if (!found || std::abs(b.start - sec) < std::abs(*cut - sec)) {
+                *cut = b.start;
+                if (before)
+                    *before = i;
+                if (after)
+                    *after = j;
+                found = true;
+            }
+        }
+    }
+    return found;
+}
+
+bool TimelineWidget::transitionPair(const TimelineClip& block, int* before, int* after) const
+{
+    // The clip starting where the block starts, overlapping one that ends where the block ends
+    for (int j = 0; j < m_clips.size(); ++j) {
+        const TimelineClip& b = m_clips[j];
+        if (b.kind != TimelineClip::Kind::Media || m_tracks[b.track].kind != TimelineTrack::Kind::Video
+            || std::abs(b.start - block.start) > 0.01)
+            continue;
+        for (int i = 0; i < m_clips.size(); ++i) {
+            const TimelineClip& a = m_clips[i];
+            if (i == j || a.track != b.track || a.start >= b.start - 0.001 || std::abs(a.end() - block.end()) > 0.01)
+                continue;
+            if (before)
+                *before = i;
+            if (after)
+                *after = j;
+            return true;
+        }
+    }
+    return false;
+}
+
+void TimelineWidget::slideAfter(int track, double from, double delta, int skip)
+{
+    // Everything on that track from `from` on, the sound detached from it, and the FX blocks above,
+    // so titles and effects stay over the bits of video they belong to
+    QSet<int> moving;
+    for (int i = 0; i < m_clips.size(); ++i)
+        if (m_clips[i].track == track && m_clips[i].start >= from - 1e-6)
+            moving.insert(i);
+    for (int i : QSet<int>(moving))
+        for (int p : partnersOf(i))
+            moving.insert(p);
+    for (int i = 0; i < m_clips.size(); ++i)
+        if (m_tracks[m_clips[i].track].kind == TimelineTrack::Kind::Fx && m_clips[i].start >= from - 1e-6)
+            moving.insert(i);
+    moving.remove(skip);
+    for (int i : moving)
+        m_clips[i].start = std::max(0.0, m_clips[i].start + delta);
+}
+
+bool TimelineWidget::applyTransition(TimelineClip block, double near, int wantedTrack)
+{
+    // Like Filmora: the clip after the cut slides back to overlap the one before by the
+    // transition's length, and the two blend across that overlap
+    double cut = 0;
+    int a = -1, b = -1;
+    if (!nearestCut(near, &cut, &a, &b))
+        return false;
+    double length = std::min({ block.duration, m_clips[a].duration - 0.1, m_clips[b].duration - 0.1 });
+    if (length < 0.1)
+        return false; // clips too short to overlap
+    const int track = m_clips[b].track;
+    slideAfter(track, cut, -length, -1);
+    block.start = cut - length;
+    block.duration = length;
+
+    // An FX track with room for it (the one asked for, or else the one nearest the video), or a new one
+    int best = -1;
+    for (int i = 0; i < m_tracks.size(); ++i) {
+        if (m_tracks[i].kind != TimelineTrack::Kind::Fx || freeStart(m_clips, i, block.start, length) != block.start)
+            continue;
+        bool better = best < 0 || (wantedTrack >= 0 ? std::abs(i - wantedTrack) < std::abs(best - wantedTrack) : i > best);
+        if (better)
+            best = i;
+    }
+    block.track = best >= 0 ? best : insertTrack(TimelineTrack::Kind::Fx, -1);
+    m_clips << block;
+    return true;
+}
+
+void TimelineWidget::undoOverlap(int blockIndex)
+{
+    // Taking a transition away: slide the clip after it back to where it was
+    int a = -1, b = -1;
+    if (!transitionPair(m_clips[blockIndex], &a, &b))
+        return;
+    double overlap = m_clips[a].end() - m_clips[b].start;
+    slideAfter(m_clips[b].track, m_clips[b].start, overlap, blockIndex);
+}
+
+void TimelineWidget::resizeTransition(int blockIndex, double length)
+{
+    int a = -1, b = -1;
+    TimelineClip& block = m_clips[blockIndex];
+    if (!transitionPair(block, &a, &b)) {
+        block.duration = std::max(0.1, length);
+        return;
+    }
+    // How long the clips were before they overlapped, so the overlap can't swallow either one
+    double overlap = m_clips[a].end() - m_clips[b].start;
+    double aLength = m_clips[a].duration, bLength = m_clips[b].duration;
+    length = std::clamp(length, 0.1, std::min(aLength, bLength) - 0.1);
+    double change = length - overlap;
+    slideAfter(m_clips[b].track, m_clips[b].start, -change, blockIndex);
+    block.start -= change;
+    block.duration = length;
+}
+
+bool TimelineWidget::placeTransition(TimelineClip& t, int wantedTrack, double near) const
+{
+    // Just a preview of where a dragged transition would go (the real thing happens on drop)
+    double cut = 0;
+    int a = -1, b = -1;
+    if (!nearestCut(near, &cut, &a, &b) || !cutNear(near))
+        return false;
+    double length = std::min({ t.duration, m_clips[a].duration - 0.1, m_clips[b].duration - 0.1 });
+    if (length < 0.1)
+        return false;
+    t.start = cut - length;
+    t.duration = length;
+    t.track = -1;
+    for (int i = 0; i < m_tracks.size(); ++i)
+        if (m_tracks[i].kind == TimelineTrack::Kind::Fx
+            && (t.track < 0 || std::abs(i - wantedTrack) < std::abs(t.track - wantedTrack)))
+            t.track = i;
+    return t.track >= 0;
 }
 
 double TimelineWidget::freeStart(const QList<TimelineClip>& clips, int track,
@@ -446,7 +926,13 @@ QList<TimelineClip> TimelineWidget::layoutDrop(const QList<TimelineClip>& clips,
     double start = std::max(0.0, xToSec(pos.x()));
 
     for (TimelineClip clip : clips) {
-        clip.track = pickTrack(wantedTrack, clip.audioOnly());
+        if (clip.isTransition() && placeTransition(clip, wantedTrack, start)) {
+            // (just the preview: on drop, the clips slide into an overlap for it)
+            all << clip;
+            placed << clip;
+            continue;
+        }
+        clip.track = pickTrack(wantedTrack, clip);
         if (clip.track < 0)
             continue;
         clip.start = freeStart(all, clip.track, start, clip.duration);
@@ -524,7 +1010,7 @@ void TimelineWidget::dragMove(const QPoint& pos)
 
     int wanted = trackAt(pos.y());
     if (wanted >= 0) {
-        int track = pickTrack(wanted, clip.audioOnly());
+        int track = pickTrack(wanted, clip);
         if (track >= 0)
             clip.track = track;
     }
@@ -614,7 +1100,7 @@ QList<int> TimelineWidget::partnersOf(int index) const
     // A clip and its detached sound share a file and line up exactly. They travel together.
     QList<int> out { index };
     const TimelineClip& me = m_clips[index];
-    if (me.isTitle())
+    if (me.kind != TimelineClip::Kind::Media)
         return out;
     for (int i = 0; i < m_clips.size(); ++i) {
         const TimelineClip& c = m_clips[i];
@@ -631,16 +1117,30 @@ void TimelineWidget::deleteSelected(bool closeGap)
         return;
     pushUndo(m_clips);
 
+    if (m_clips[m_selected].isTransition()) {
+        // Slide the clip after it back out of the overlap, then drop the block
+        undoOverlap(m_selected);
+        m_clips.removeAt(m_selected);
+        select(-1);
+        changed();
+        return;
+    }
+
     QList<int> doomed = partnersOf(m_selected);
     std::sort(doomed.begin(), doomed.end(), std::greater<int>()); // back to front so indexes stay valid
     for (int i : doomed) {
         TimelineClip gone = m_clips.takeAt(i);
         if (!closeGap)
             continue;
-        // Slide everything after it on the same track left, so there's no hole to fix by hand
-        for (TimelineClip& c : m_clips)
-            if (c.track == gone.track && c.start >= gone.end() - 1e-6)
+        // Slide everything after it on the same track left, so there's no hole to fix by hand.
+        // Cutting footage also slides the titles, effects and transitions above it, so they stay
+        // lined up with the bits of video they belong to.
+        bool footage = m_tracks[gone.track].kind == TimelineTrack::Kind::Video;
+        for (TimelineClip& c : m_clips) {
+            bool fx = footage && m_tracks[c.track].kind == TimelineTrack::Kind::Fx;
+            if ((c.track == gone.track || fx) && c.start >= gone.end() - 1e-6)
                 c.start = std::max(0.0, c.start - gone.duration);
+        }
     }
     select(-1);
     changed();
@@ -655,8 +1155,10 @@ void TimelineWidget::undo()
 {
     if (m_undo.isEmpty())
         return;
-    m_redo << m_clips;
-    m_clips = m_undo.takeLast();
+    m_redo << Snapshot { m_clips, m_tracks };
+    Snapshot s = m_undo.takeLast();
+    m_clips = s.clips;
+    m_tracks = s.tracks;
     select(-1);
     changed();
 }
@@ -665,15 +1167,17 @@ void TimelineWidget::redo()
 {
     if (m_redo.isEmpty())
         return;
-    m_undo << m_clips;
-    m_clips = m_redo.takeLast();
+    m_undo << Snapshot { m_clips, m_tracks };
+    Snapshot s = m_redo.takeLast();
+    m_clips = s.clips;
+    m_tracks = s.tracks;
     select(-1);
     changed();
 }
 
 void TimelineWidget::pushUndo(const QList<TimelineClip>& state)
 {
-    m_undo << state;
+    m_undo << Snapshot { state, m_tracks };
     if (m_undo.size() > MaxUndo)
         m_undo.removeFirst();
     m_redo.clear();
@@ -728,8 +1232,9 @@ void TimelineWidget::keepPlayheadVisible()
 
 void TimelineWidget::dragEnterEvent(QDragEnterEvent* event)
 {
-    // Clips from the media panel, or files straight from the file manager
-    if (event->mimeData()->hasFormat(MediaBin::MimeType) || !filesFromMime(event->mimeData()).isEmpty())
+    // Clips (media, titles, effects, transitions) from the panels, or files from the file manager
+    const QMimeData* mime = event->mimeData();
+    if (mime->hasFormat(MediaBin::MimeType) || !filesFromMime(mime).isEmpty())
         event->acceptProposedAction();
 }
 
@@ -768,12 +1273,25 @@ void TimelineWidget::dropEvent(QDropEvent* event)
 
 void TimelineWidget::dropClips(const QList<TimelineClip>& clips, const QPoint& pos)
 {
-    QList<TimelineClip> placed = layoutDrop(clips, pos);
-    if (placed.isEmpty())
-        return;
-    pushUndo(m_clips);
+    const Snapshot before { m_clips, m_tracks };
     bool wasEmpty = m_clips.isEmpty();
+
+    // Transitions slide the clips into an overlap; everything else lands where it was dropped
+    QList<TimelineClip> others;
+    bool added = false;
+    for (const TimelineClip& c : clips) {
+        if (c.isTransition() && cutNear(xToSec(pos.x())))
+            added |= applyTransition(c, std::max(0.0, xToSec(pos.x())), trackAt(pos.y()));
+        else
+            others << c;
+    }
+    QList<TimelineClip> placed = layoutDrop(others, pos);
     m_clips << placed;
+    if (!added && placed.isEmpty())
+        return;
+
+    m_undo << before;
+    m_redo.clear();
     select(int(m_clips.size()) - 1);
     if (wasEmpty)
         zoomToFit(); // first clip in? show the whole thing
@@ -791,7 +1309,9 @@ void TimelineWidget::mousePressEvent(QMouseEvent* event)
         return;
 
     int hit = pos.y() >= RulerHeight ? clipAt(pos) : -1;
-    if (hit >= 0) {
+    if (hit >= 0 && m_clips[hit].isTransition() && isOnCut(m_clips[hit])) {
+        select(hit); // locked to its overlap: change its length in Properties instead
+    } else if (hit >= 0) {
         select(hit);
         m_beforeDrag = m_clips;
         m_dragPartners = partnersOf(hit);
@@ -822,7 +1342,7 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event)
     case Drag::None: {
         // Just hovering: show the resize arrows over clip edges
         int hit = pos.y() >= RulerHeight && pos.x() >= HeaderWidth ? clipAt(pos) : -1;
-        if (edgeAt(hit, pos) != Edge::None)
+        if (hit >= 0 && !(m_clips[hit].isTransition() && isOnCut(m_clips[hit])) && edgeAt(hit, pos) != Edge::None)
             setCursor(Qt::SizeHorCursor);
         else
             unsetCursor();
@@ -908,8 +1428,26 @@ void TimelineWidget::resizeEvent(QResizeEvent* event)
 void TimelineWidget::contextMenuEvent(QContextMenuEvent* event)
 {
     QPoint pos = event->pos();
-    if (pos.x() < HeaderWidth)
+    if (pos.x() < HeaderWidth) {
+        // Right-click a track name: add or remove tracks
+        int track = trackAt(pos.y());
+        QMenu menu(this);
+        using K = TimelineTrack::Kind;
+        menu.addAction("Add an FX track (titles, effects, transitions)", this, [this] { addTrack(K::Fx); });
+        menu.addAction("Add a video track", this, [this] { addTrack(K::Video); });
+        menu.addAction("Add an audio track", this, [this] { addTrack(K::Audio); });
+        if (track >= 0) {
+            menu.addSeparator();
+            QAction* remove = menu.addAction(QString("Remove \"%1\"").arg(m_tracks[track].name), this,
+                                             [this, track] { removeTrack(track); });
+            bool empty = std::none_of(m_clips.begin(), m_clips.end(), [track](const TimelineClip& c) { return c.track == track; });
+            remove->setEnabled(empty);
+            if (!empty)
+                remove->setText(remove->text() + " (move its clips off first)");
+        }
+        menu.exec(event->globalPos());
         return;
+    }
     int hit = pos.y() >= RulerHeight ? clipAt(pos) : -1;
     double at = std::max(0.0, xToSec(pos.x()));
 
@@ -927,6 +1465,14 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event)
         menu.addAction("Delete, leaving a gap", this, [this] { deleteSelectedKeepGap(); });
         if (clip.showsVideo() && clip.playsAudio())
             menu.addAction("Detach audio", this, &TimelineWidget::detachAudio);
+        QMenu* transitions = menu.addMenu("Transition into this clip");
+        for (int type = 0; type < VE_TRANSITION_COUNT; ++type) {
+            QAction* a = transitions->addAction(transitionName(type), this, [this, hit, type] { setTransition(hit, type); });
+            a->setCheckable(true);
+            a->setChecked(clip.transition == type);
+        }
+        if (!hasClipBefore(hit))
+            transitions->setToolTip("Needs another clip ending right where this one starts");
         menu.addSeparator();
     }
     menu.addAction("Add a title here", this, [this, at] {
@@ -1012,22 +1558,26 @@ void TimelineWidget::drawTracks(QPainter& p)
 
     for (int i = 0; i < m_tracks.size(); ++i) {
         QRect t = trackRect(i);
-        p.fillRect(t, TrackBg);
-        p.fillRect(0, t.top(), HeaderWidth, TrackHeight, HeaderBg);
+        bool fx = m_tracks[i].kind == TimelineTrack::Kind::Fx;
+        p.fillRect(t, fx ? FxTrackBg : TrackBg);
+        p.fillRect(0, t.top(), HeaderWidth, t.height(), HeaderBg);
+        // A coloured strip on the left says what kind of track it is
+        QColor strip = fx ? EffectClip : m_tracks[i].kind == TimelineTrack::Kind::Video ? VideoClip : AudioClip;
+        p.fillRect(0, t.top(), 3, t.height(), strip);
 
         p.setPen(Lines);
         p.drawLine(0, t.bottom(), width(), t.bottom());
         p.drawLine(HeaderWidth - 1, t.top(), HeaderWidth - 1, t.bottom());
 
         p.setPen(Dim);
-        p.drawText(QRect(10, t.top(), HeaderWidth - 10, TrackHeight), Qt::AlignVCenter, m_tracks[i].name);
+        p.drawText(QRect(10, t.top(), HeaderWidth - 10, t.height()), Qt::AlignVCenter, m_tracks[i].name);
     }
 
-    int bottom = RulerHeight + int(m_tracks.size()) * TrackHeight;
+    int bottom = tracksBottom();
     if (m_clips.isEmpty() && bottom < height()) {
         p.setPen(Dim);
         p.drawText(QRect(HeaderWidth, bottom, width() - HeaderWidth, height() - bottom),
-                   Qt::AlignCenter, "Drag clips here (or double-click them in Media) to start editing");
+                   Qt::AlignCenter, "Drag clips here (or double-click them in Media) to start editing.\nRight-click a track name to add more tracks.");
     }
 }
 
@@ -1075,10 +1625,31 @@ void TimelineWidget::drawClip(QPainter& p, const TimelineClip& clip, bool select
 
     QPainterPath shape;
     shape.addRoundedRect(r, 4, 4);
-    p.fillPath(shape, clip.isTitle() ? TitleClip : clip.audioOnly() ? AudioClip : VideoClip);
+    QColor fill = clip.isTitle()        ? TitleClip
+                  : clip.isEffect()     ? EffectClip
+                  : clip.isTransition() ? TransitionClip
+                  : clip.audioOnly()    ? AudioClip
+                                        : VideoClip;
+    p.fillPath(shape, fill);
     p.setClipPath(shape, Qt::IntersectClip);
 
-    if (clip.isTitle()) {
+    if (clip.isTransition()) {
+        // On a cut: a bow-tie, the two clips crossing. Otherwise a ramp up (in), down (out),
+        // or a V (out and back in on the spot).
+        p.setPen(QPen(QColor(255, 255, 255, 150), 1.2));
+        int part = ghost ? -1 : transitionPart(clip);
+        if (part == VE_PART_IN) {
+            p.drawLine(r.bottomLeft(), r.topRight());
+        } else if (part == VE_PART_OUT) {
+            p.drawLine(r.topLeft(), r.bottomRight());
+        } else if (part == VE_PART_THROUGH) {
+            const QPointF vee[] = { r.topLeft(), QPointF(r.center().x(), r.bottom()), r.topRight() };
+            p.drawPolyline(vee, 3);
+        } else {
+            const QPointF bowtie[] = { r.topLeft(), r.bottomRight(), r.topRight(), r.bottomLeft(), r.topLeft() };
+            p.drawPolyline(bowtie, 5);
+        }
+    } else if (clip.isTitle()) {
         // Show the actual words, so you can tell titles apart at a glance
         QFont big = p.font();
         big.setPixelSize(int(r.height() * 0.38));
@@ -1088,7 +1659,7 @@ void TimelineWidget::drawClip(QPainter& p, const TimelineClip& clip, bool select
         double left = std::max(r.left(), double(HeaderWidth)) + 8;
         p.drawText(QRectF(left, r.top() + 14, r.right() - left, r.height() - 14),
                    Qt::AlignLeft | Qt::AlignVCenter, clip.title.text.simplified());
-    } else if (clip.showsVideo() && !m_tracks[clip.track].audio) {
+    } else if (clip.showsVideo() && m_tracks[clip.track].kind != TimelineTrack::Kind::Audio) {
         drawFilmstrip(p, clip, r);
     } else if (clip.playsAudio()) {
         drawWaveform(p, clip, r);
@@ -1100,8 +1671,16 @@ void TimelineWidget::drawClip(QPainter& p, const TimelineClip& clip, bool select
     font.setPixelSize(11);
     font.setBold(false);
     p.setFont(font);
-    QString icon = clip.isTitle() ? QStringLiteral("T  ") : clip.audioOnly() ? QStringLiteral("♪ ") : QString();
+    QString icon = clip.isTitle()       ? QStringLiteral("T  ")
+                   : clip.isEffect()  ? QStringLiteral("fx  ")
+                   : clip.audioOnly() ? QStringLiteral("♪ ")
+                                      : QString();
     QString muted = clip.hasAudio && !clip.audioOn && clip.showsVideo() ? QStringLiteral("  ·  no sound") : QString();
+    if (clip.isTransition() && !ghost) {
+        int part = transitionPart(clip);
+        muted = part == VE_PART_IN ? QStringLiteral("  ·  in") : part == VE_PART_OUT ? QStringLiteral("  ·  out")
+              : part == VE_PART_THROUGH ? QStringLiteral("  ·  on the spot") : QString();
+    }
     QString label = icon + clip.name + QStringLiteral("  ·  ") + formatTime(clip.duration) + muted;
     double visibleLeft = std::max(r.left(), double(HeaderWidth));
     int maxText = int(r.right() - visibleLeft - 14);

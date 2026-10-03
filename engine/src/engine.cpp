@@ -205,16 +205,24 @@ void ve_timeline_set_clips(ve_timeline* tl, const ve_clip* clips, int count)
     std::vector<ve::Clip> list;
     for (int i = 0; i < count && clips; ++i) {
         const ve_clip& c = clips[i];
-        if (!c.path || c.duration <= 0)
+        bool adjustment = c.kind == VE_CLIP_ADJUSTMENT || c.kind == VE_CLIP_TRANSITION; // (no file either way)
+        if ((!c.path && !adjustment) || c.duration <= 0)
             continue;
         ve::Clip clip;
-        clip.path = c.path;
+        clip.kind = c.kind == VE_CLIP_ADJUSTMENT   ? ve::Clip::Kind::Adjustment
+                    : c.kind == VE_CLIP_TRANSITION ? ve::Clip::Kind::Transition
+                                                   : ve::Clip::Kind::Media;
+        clip.path = c.path ? c.path : "";
         clip.layer = c.layer;
         clip.start = c.start;
         clip.in = c.in;
         clip.duration = c.duration;
         clip.useVideo = c.use_video != 0;
         clip.useAudio = c.use_audio != 0;
+        if (adjustment) { // works on the picture: no sound, always "visible"
+            clip.useVideo = true;
+            clip.useAudio = false;
+        }
         clip.volume = c.volume;
         clip.fadeIn = std::max(0.0, c.fade_in);
         clip.fadeOut = std::max(0.0, c.fade_out);
@@ -231,6 +239,14 @@ void ve_timeline_set_clips(ve_timeline* tl, const ve_clip* clips, int count)
         clip.effects.blur = std::clamp(c.blur, 0.0f, 1.0f);
         clip.effects.sharpen = std::clamp(c.sharpen, 0.0f, 1.0f);
         clip.effects.vignette = std::clamp(c.vignette, 0.0f, 1.0f);
+        clip.transition = (c.transition > 0 && c.transition < VE_TRANSITION_COUNT) ? ve::Transition(c.transition) : ve::Transition::None;
+        clip.transitionDuration = c.transition_duration > 0 ? c.transition_duration : 1.0;
+        clip.animIn = (c.anim_in > 0 && c.anim_in < VE_ANIM_COUNT) ? ve::Anim(c.anim_in) : ve::Anim::None;
+        clip.animInDuration = c.anim_in_duration > 0 ? c.anim_in_duration : 0.5;
+        clip.animOut = (c.anim_out > 0 && c.anim_out < VE_ANIM_COUNT) ? ve::Anim(c.anim_out) : ve::Anim::None;
+        clip.animOutDuration = c.anim_out_duration > 0 ? c.anim_out_duration : 0.5;
+        clip.part = (c.transition_part >= VE_PART_THROUGH && c.transition_part <= VE_PART_OUT)
+                        ? ve::Clip::Part(c.transition_part) : ve::Clip::Part::Through;
         list.push_back(std::move(clip));
     }
     tl->timeline.setClips(list);
@@ -262,6 +278,24 @@ int ve_timeline_render_audio(ve_timeline* tl, double t, int frames, float* out)
     if (!tl || frames < 0 || !out)
         return VE_ERR_ARG;
     tl->timeline.renderAudio(t, frames, out);
+    return VE_OK;
+}
+
+int ve_apply_effects(const ve_clip* c, uint8_t* rgba, int w, int h)
+{
+    if (!c || !rgba || w <= 0 || h <= 0)
+        return VE_ERR_ARG;
+    ve::Effects fx;
+    fx.look = (c->look > 0 && c->look < VE_LOOK_COUNT) ? ve::Look(c->look) : ve::Look::None;
+    fx.brightness = c->brightness;
+    fx.contrast = c->contrast;
+    fx.saturation = c->saturation;
+    fx.temperature = c->temperature;
+    fx.blur = std::clamp(c->blur, 0.0f, 1.0f);
+    fx.sharpen = std::clamp(c->sharpen, 0.0f, 1.0f);
+    fx.vignette = std::clamp(c->vignette, 0.0f, 1.0f);
+    ve::EffectsScratch scratch;
+    ve::applyEffects(rgba, w, h, fx, false, scratch);
     return VE_OK;
 }
 

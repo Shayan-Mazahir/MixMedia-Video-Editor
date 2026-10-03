@@ -79,6 +79,8 @@ int ve_reader_frame(ve_reader* reader, double sec, int fast, int max_w, int max_
 /* ---- Timelines ---- */
 
 typedef struct ve_clip {
+    int kind;        /* VE_CLIP_MEDIA (a file), VE_CLIP_ADJUSTMENT (effects over everything below, no file)
+                        or VE_CLIP_TRANSITION (a transition played on everything below, no file) */
     const char* path;
     int layer;       /* bigger = on top */
     double start;    /* where it sits on the timeline (seconds) */
@@ -105,7 +107,61 @@ typedef struct ve_clip {
     float blur;         /*  0..1 */
     float sharpen;      /*  0..1 */
     float vignette;     /*  0..1 */
+
+    /* Media clips: transition from the clip before on the same layer. If this clip overlaps
+       the end of that one they blend across the overlap, if they just touch it's centred on the cut.
+       VE_CLIP_TRANSITION blocks: the transition they play (and transition_part says how). */
+    int transition;             /* one of VE_TRANSITION_* */
+    double transition_duration; /* seconds (0 counts as 1) */
+
+    /* How the clip arrives and leaves */
+    int anim_in;                /* one of VE_ANIM_* */
+    double anim_in_duration;    /* seconds (0 counts as 0.5) */
+    int anim_out;
+    double anim_out_duration;
+
+    /* VE_CLIP_TRANSITION blocks only: one of VE_PART_* */
+    int transition_part;
 } ve_clip;
+
+enum {
+    VE_TRANSITION_NONE = 0,
+    VE_TRANSITION_DISSOLVE,
+    VE_TRANSITION_FADE_BLACK,
+    VE_TRANSITION_WIPE_LEFT,
+    VE_TRANSITION_WIPE_RIGHT,
+    VE_TRANSITION_WIPE_UP,
+    VE_TRANSITION_WIPE_DOWN,
+    VE_TRANSITION_SLIDE_LEFT,
+    VE_TRANSITION_SLIDE_RIGHT,
+    VE_TRANSITION_ZOOM,
+    VE_TRANSITION_COUNT
+};
+
+enum {
+    VE_ANIM_NONE = 0,
+    VE_ANIM_FADE,
+    VE_ANIM_SLIDE_LEFT,
+    VE_ANIM_SLIDE_RIGHT,
+    VE_ANIM_SLIDE_UP,
+    VE_ANIM_SLIDE_DOWN,
+    VE_ANIM_ZOOM,
+    VE_ANIM_WIPE,
+    VE_ANIM_COUNT
+};
+
+enum {
+    VE_CLIP_MEDIA = 0,
+    VE_CLIP_ADJUSTMENT = 1,
+    VE_CLIP_TRANSITION = 2
+};
+
+/* How a transition block plays on the picture below it */
+enum {
+    VE_PART_THROUGH = 0, /* out and back in again, on the spot */
+    VE_PART_IN,          /* in from black */
+    VE_PART_OUT          /* out to black */
+};
 
 /* One-click looks */
 enum {
@@ -141,6 +197,9 @@ int ve_timeline_render_video_bgra(ve_timeline* tl, double t, int w, int h, uint8
 
 /* Mixes `frames` stereo samples starting at time t (out needs frames * 2 floats). */
 int ve_timeline_render_audio(ve_timeline* tl, double t, int frames, float* out);
+
+/* Applies a clip's effects (look, brightness, blur...) to an RGBA picture in place. Handy for previews. */
+int ve_apply_effects(const ve_clip* settings, uint8_t* rgba, int w, int h);
 
 /* ---- Export ---- */
 

@@ -26,7 +26,11 @@ public:
     QSize sizeHint() const override;
 
     const QList<TimelineClip>& clips() const { return m_clips; }
-    void setClips(const QList<TimelineClip>& clips); // e.g. opening a project (clears undo)
+    const QList<TimelineTrack>& tracks() const { return m_tracks; }
+    static QList<TimelineTrack> defaultTracks();
+
+    // e.g. opening a project (clears undo). No tracks = an older project, which gets tidied up.
+    void setClips(const QList<TimelineClip>& clips, const QList<TimelineTrack>& tracks = {});
 
     // What the engine needs. titleImage turns a title into the picture file to show.
     QList<RenderClip> renderClips(const std::function<QString(const TimelineClip&)>& titleImage = {}) const;
@@ -39,6 +43,8 @@ public:
     void appendClips(const QList<TimelineClip>& clips);
     // Drops clips as if they'd been dragged to `pos` (used for files dragged in from outside)
     void dropClips(const QList<TimelineClip>& clips, const QPoint& pos);
+    // Puts a title/effect at the playhead (or a transition on the nearest cut)
+    void addAtPlayhead(const TimelineClip& clip);
 
     // Where clips start and end, for jumping between cuts
     QList<double> cutPoints() const;
@@ -50,6 +56,16 @@ public:
     void updateClip(int index, const TimelineClip& clip, const QString& what);
     // Changes how fast a clip plays, and slides everything after it along to make room
     void setClipSpeed(int index, double speed);
+    // Puts a transition on the cut where this clip starts
+    void setTransition(int index, int type);
+    bool hasClipBefore(int index) const; // does another clip end right where this one starts?
+    bool isOnCut(const TimelineClip& transition) const; // is a transition block joining two clips on a cut?
+    // A transition block that isn't on a cut: VE_PART_IN, _OUT or _THROUGH (-1 = it's on a cut)
+    int transitionPart(const TimelineClip& transition) const;
+
+    // Tracks
+    void addTrack(TimelineTrack::Kind kind, int at = -1); // at = index, -1 = the usual spot
+    bool removeTrack(int index);                          // only empty ones
 
 public slots:
     void splitAtPlayhead();
@@ -83,17 +99,22 @@ protected:
     void contextMenuEvent(QContextMenuEvent* event) override;
 
 private:
-    struct Track {
-        QString name;
-        bool audio;
-    };
     enum class Drag { None, Playhead, Move, TrimLeft, TrimRight };
     enum class Edge { None, Left, Right };
+
+    // Undo keeps the tracks too, since adding one shifts every clip below it
+    struct Snapshot {
+        QList<TimelineClip> clips;
+        QList<TimelineTrack> tracks;
+    };
 
     // Turning seconds into pixels and back
     double secToX(double sec) const;
     double xToSec(double x) const;
     QRect contentRect() const;
+    int trackHeight(int track) const;
+    int trackTop(int track) const;
+    int tracksBottom() const;
     QRect trackRect(int track) const;
     QRectF clipRect(const TimelineClip& clip) const;
     int trackAt(int y) const;
@@ -101,9 +122,22 @@ private:
     Edge edgeAt(int clip, const QPoint& pos) const;
 
     // Placement rules
-    int pickTrack(int wanted, bool audioOnly) const;
+    bool accepts(int track, const TimelineClip& clip) const;
+    int pickTrack(int wanted, const TimelineClip& clip) const;
+    int mainVideoTrack() const;
+    int homeTrack(const TimelineClip& clip) const;
     static double freeStart(const QList<TimelineClip>& clips, int track,
                             double start, double duration, int ignore = -1);
+    // Cuts = one clip ending exactly where the next starts, on a video track
+    bool nearestCut(double sec, double* cut, int* before = nullptr, int* after = nullptr) const;
+    // The two clips a transition block blends (the second overlapping the end of the first)
+    bool transitionPair(const TimelineClip& block, int* before, int* after) const;
+    bool cutNear(double sec) const; // is there a cut within a few pixels of here?
+    void slideAfter(int track, double from, double delta, int skip); // that track, its sound and the FX above
+    bool applyTransition(TimelineClip block, double near, int wantedTrack); // overlaps the clips, adds the block
+    void undoOverlap(int blockIndex);
+    void resizeTransition(int blockIndex, double length);
+    bool placeTransition(TimelineClip& t, int wantedTrack, double near) const; // just for the drag preview
     QList<TimelineClip> layoutDrop(const QList<TimelineClip>& clips, const QPoint& pos) const;
     static QList<TimelineClip> clipsFromMime(const QMimeData* mime);
     static QStringList filesFromMime(const QMimeData* mime);
@@ -120,6 +154,8 @@ private:
     void changed();
     void invalidate(); // something changed, redraw the timeline properly next time
     void select(int index);
+    void upgradeOldProject(); // older projects had transitions stored on clips, and no FX tracks
+    int insertTrack(TimelineTrack::Kind kind, int at); // adds a track (no undo step), returns where it went
 
     void clampScroll();
     void keepPlayheadVisible();
@@ -133,13 +169,13 @@ private:
     void drawFades(QPainter& p, const TimelineClip& clip, const QRectF& r);
     void drawPlayhead(QPainter& p);
 
-    QList<Track> m_tracks { { "Video 2", false }, { "Video 1", false }, { "Audio 1", true }, { "Audio 2", true } };
+    QList<TimelineTrack> m_tracks = defaultTracks();
     QList<TimelineClip> m_clips;
     QList<TimelineClip> m_ghosts; // where a drop would land
     int m_selected = -1;
 
-    QList<QList<TimelineClip>> m_undo;
-    QList<QList<TimelineClip>> m_redo;
+    QList<Snapshot> m_undo;
+    QList<Snapshot> m_redo;
     QList<TimelineClip> m_beforeDrag;
     QList<int> m_dragPartners;
     QString m_lastEdit;
@@ -161,5 +197,6 @@ private:
 
     static constexpr int RulerHeight = 28;
     static constexpr int TrackHeight = 58;
+    static constexpr int FxTrackHeight = 40;
     static constexpr int HeaderWidth = 90;
 };

@@ -16,6 +16,7 @@ constexpr const char* Extension = "mixmedia";
 struct Data {
     QStringList media;          // everything in the media panel
     QList<TimelineClip> clips;  // thumbnails aren't saved, they get remade on open
+    QList<TimelineTrack> tracks; // empty = an older project (from before FX tracks)
     double playhead = 0.0;
 };
 

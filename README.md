@@ -10,15 +10,29 @@ This project, for majority is vibe coded, it serves 2 purpose for me:
 
 2. Having a personal video editor that suits my requirnments and is easy to use
 
+## Download
+
+Grab the latest from the [Releases page](https://github.com/Shayan-Mazahir/MixMedia-Video-Editor/releases/latest):
+
+| | Easiest | Portable (no install) |
+|---|---|---|
+| **Windows** | `MixMedia-Setup-x64.exe`: installs with Start menu and desktop shortcuts | `MixMedia-Windows-x64.zip`: unzip and run `mixmedia.exe` |
+| **Linux** | `MixMedia-Linux-x86_64.AppImage`: make it executable and run it | `MixMedia-Linux-x86_64.tar.gz`: unpack and run `mixmedia` |
+
+Everything it needs is included, so there's nothing else to install.
+
 ## What it can do
 
-- **Timeline** with 2 video tracks and 2 audio tracks: drag clips in, move, trim edges, split (`S`), snap
+- **Timeline** in the Filmora style: FX tracks on top for titles, effects and transitions, then video and audio tracks. Drag clips in, move, trim edges, split (`S`), snap. Right-click a track name to add more.
 - **Ripple delete**: deleting a clip closes the gap (`Shift+Delete` leaves it)
 - **Live preview** and playback with sound
 - **Detach audio** into its own track, with a waveform
 - **Volume and fades** per clip (fade the top clip in over another for a cross-dissolve)
 - **Titles** with your own text, size, colour and position
 - **Effects**: one-click looks (black & white, sepia, vintage, vivid, cool, warm, faded, dramatic) plus brightness, contrast, colour, warmth, blur, sharpen and vignette
+- **Transitions** like Filmora: drop one on a cut and the clip after it slides back to overlap the one before, so both keep playing while they blend (the video gets shorter by the transition's length). Dissolve, fade through black, wipes, slides and zoom, and the sound crossfades too. Change the length in Properties, or delete it to slide everything back. No cut needed either: put one at the start of a clip to bring it in from black, at the end to take it out, or anywhere in the middle to play it on the spot (like an effect, it works on everything below it).
+- **Effect blocks**: drop a look or effect on an FX track and it applies to everything below it, for as long as the block lasts. Stack several on different FX tracks.
+- **Animations**: clips and titles can fade, slide, zoom or wipe in and out
 - **Picture-in-picture**: resize, move and fade any clip over another
 - **Speed**: slow motion and fast forward, from 0.1× to 10×
 - **Precise controls**: every slider has a box for typing exact numbers

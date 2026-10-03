@@ -13,6 +13,7 @@
 
 // A clip described just enough for the engine to play it. Safe to copy between threads.
 struct RenderClip {
+    int kind = VE_CLIP_MEDIA; // or VE_CLIP_ADJUSTMENT / VE_CLIP_TRANSITION, which work on everything below
     QString path;
     int layer = 0;
     double start = 0.0;
@@ -27,6 +28,11 @@ struct RenderClip {
     float opacity = 1.0f, scale = 1.0f, posX = 0.0f, posY = 0.0f;
     int look = 0;
     float brightness = 0, contrast = 0, saturation = 0, temperature = 0, blur = 0, sharpen = 0, vignette = 0;
+    int transition = 0;
+    double transitionDuration = 1.0;
+    int animIn = 0, animOut = 0;
+    double animInDuration = 0.5, animOutDuration = 0.5;
+    int part = VE_PART_THROUGH; // transition blocks: on the spot, in from black or out to black
 };
 
 // Hands the clips to an engine timeline (the engine wants plain C strings, so we keep them alive here).
@@ -38,6 +44,7 @@ inline void applyClips(ve_timeline* tl, const QList<RenderClip>& clips)
     for (const RenderClip& c : clips) {
         paths.push_back(c.path.toUtf8());
         ve_clip v {};
+        v.kind = c.kind;
         v.path = paths.back().constData();
         v.layer = c.layer;
         v.start = c.start;
@@ -61,6 +68,13 @@ inline void applyClips(ve_timeline* tl, const QList<RenderClip>& clips)
         v.blur = c.blur;
         v.sharpen = c.sharpen;
         v.vignette = c.vignette;
+        v.transition = c.transition;
+        v.transition_duration = c.transitionDuration;
+        v.anim_in = c.animIn;
+        v.anim_in_duration = c.animInDuration;
+        v.anim_out = c.animOut;
+        v.anim_out_duration = c.animOutDuration;
+        v.transition_part = c.part;
         list.push_back(v);
     }
     ve_timeline_set_clips(tl, list.data(), int(list.size()));

@@ -26,6 +26,10 @@ qt_add_library(editor_ui STATIC
     TimelineWidget.cpp
     TimelineWidget.h
     TitleRenderer.cpp
+    LibraryPanel.cpp
+    LibraryPanel.h
+    ClipPresets.h
+    EffectNames.h
     TitleRenderer.h
     WaveformCache.cpp
     WaveformCache.h
