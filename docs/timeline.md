@@ -13,7 +13,11 @@ From top to bottom:
 - **Video tracks**: your footage and pictures. Higher tracks show on top of lower ones (that's how picture-in-picture works).
 - **Audio tracks**: sound on its own, like music or detached audio.
 
-Right-click a track's name to add more tracks, or remove an empty one.
+Click **+ Track** (top-left corner of the timeline) to add any kind of track, or right-click a track's name to add one or remove an empty one.
+
+## Stacking videos on top of each other
+
+Each video track shows on top of the ones below it, so stacking 5 videos means 5 video tracks. The easy way: **drag a video up onto the FX tracks**. It goes on the top video track, and if that's busy there, MixMedia makes a new video track on top for it. Then shrink and place each one with **Quick spot** in Properties (corners, halves, a 2×2 grid), see [Changing a clip](clips.md).
 
 ## Moving and trimming
 

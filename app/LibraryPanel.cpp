@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shayan Mazahir. Part of MixMedia Video Editor, see NOTICE.
 
 #include "LibraryPanel.h"
+#include "CardDelegate.h"
 #include "EffectNames.h"
 #include "MediaBin.h"
 #include "TitleRenderer.h"
@@ -137,7 +138,9 @@ LibraryPanel::LibraryPanel(const QList<TimelineClip>& items, QWidget* parent)
     setViewMode(QListView::IconMode);
     setMovement(QListView::Static);
     setIconSize(QSize(IconW, IconH));
-    setGridSize(QSize(IconW + 20, IconH + 36));
+    setGridSize(QSize(IconW + 20, IconH + 48));
+    setItemDelegate(new CardDelegate(this)); // the same little cards as the media panel
+    setMouseTracking(true);
     setResizeMode(QListView::Adjust);
     setWordWrap(true);
     setFocusPolicy(Qt::ClickFocus);

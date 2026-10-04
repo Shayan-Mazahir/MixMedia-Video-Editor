@@ -20,6 +20,9 @@ class PreviewRenderer;
 class PreviewWidget;
 class SubtitlePanel;
 class QComboBox;
+class QSplitter;
+class QTabWidget;
+class QToolBar;
 class QLabel;
 class QListWidgetItem;
 class QToolButton;
@@ -38,13 +41,22 @@ public:
     bool loadProject(const QString& path);
 
     // Crashed last time? Offers to bring back what was auto-saved. Call once at startup.
-    void offerRecovery();
+    bool offerRecovery(); // true = it brought something back
+
+    // The welcome screen (new, open, recent projects). Call once at startup.
+    void showWelcome(bool always = false);
+
+    // Opens at the size and layout you left it at (or one that suits this screen, the first time)
+    void restoreLayout();
+    static QStringList recentProjects();
 
     // For testing: load files, put them on the timeline, then save a screenshot and quit
     void runDemo(const QStringList& paths, const QString& screenshotPath);
 
 protected:
     void closeEvent(QCloseEvent* event) override;
+    void changeEvent(QEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
     void dragEnterEvent(QDragEnterEvent* event) override;
     void dropEvent(QDropEvent* event) override;
 
@@ -106,6 +118,28 @@ private:
     void setDirty(bool dirty);
     void updateWindowTitle();
     QString projectFolder() const;
+    void rememberRecent(const QString& path);
+    QMenu* m_recentMenu = nullptr;
+    QList<QPair<QAction*, QString>> m_actionIcons; // (redrawn when the theme changes)
+    QToolButton* m_startButton = nullptr;
+    void refreshIcons();
+
+    // Fitting the window: panels and toolbar adapt when it's narrow, and the layout's remembered
+    void adaptToSize();
+    void saveLayout();
+    void resetLayout();
+    QSplitter* m_top = nullptr;
+    QSplitter* m_main = nullptr;
+    QTabWidget* m_library = nullptr;
+    QWidget* m_previewPanel = nullptr;
+    QToolBar* m_toolbar = nullptr;
+    QAction* m_showLibrary = nullptr;
+    QAction* m_showProperties = nullptr;
+    QAction* m_focusPreview = nullptr;
+    QAction* m_fullScreen = nullptr;
+    int m_toolbarTextWidth = 0;  // how wide the toolbar needs to be with its labels showing
+    bool m_iconsOnly = false;
+    bool m_wasMaximized = false; // (before full screen)
 
     MediaBin* m_mediaBin = nullptr;
     PreviewWidget* m_preview = nullptr;

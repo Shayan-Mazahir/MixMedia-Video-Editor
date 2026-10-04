@@ -49,7 +49,7 @@ QPushButton* makeResetButton(const QString& text)
 {
     auto* b = new QPushButton(text);
     b->setFlat(true);
-    b->setStyleSheet("color: #2fc6b4;");
+    b->setProperty("role", "link");
     return b;
 }
 
@@ -61,10 +61,12 @@ ClipInspector::ClipInspector(QWidget* parent)
     : QWidget(parent)
 {
     auto* outer = new QVBoxLayout(this);
-    outer->setContentsMargins(4, 8, 8, 8);
+    outer->setContentsMargins(10, 8, 6, 8);
+    setObjectName("card"); // (a rounded panel, like the library's)
+    setAttribute(Qt::WA_StyledBackground);
 
     auto* title = new QLabel("Properties");
-    title->setStyleSheet("font-weight: bold;");
+    title->setProperty("role", "heading");
     // "?" opens the help page for whatever's selected
     auto* heading = new QHBoxLayout;
     heading->addWidget(title);
@@ -84,7 +86,7 @@ ClipInspector::ClipInspector(QWidget* parent)
 
     m_empty = new QLabel("Click a clip on the timeline to tweak it here.");
     m_empty->setWordWrap(true);
-    m_empty->setStyleSheet("color: #808286;");
+    m_empty->setProperty("role", "dim");
     m_empty->setAlignment(Qt::AlignTop | Qt::AlignLeft);
     outer->addWidget(m_empty);
 
@@ -102,12 +104,12 @@ ClipInspector::ClipInspector(QWidget* parent)
 
     m_name = new QLabel;
     m_name->setWordWrap(true);
-    m_name->setStyleSheet("font-weight: bold; color: #2fc6b4;");
+    m_name->setProperty("role", "accent");
     m_info = new QLabel;
-    m_info->setStyleSheet("color: #808286;");
+    m_info->setProperty("role", "dim");
     auto* hint = new QLabel("Drag a slider or type an exact number. Double-click a slider to reset it.");
     hint->setWordWrap(true);
-    hint->setStyleSheet("color: #808286; font-size: 11px;");
+    hint->setProperty("role", "hint");
     layout->addWidget(m_name);
     layout->addWidget(m_info);
     layout->addWidget(hint);
@@ -178,7 +180,7 @@ ClipInspector::ClipInspector(QWidget* parent)
     subForm->addRow(m_ownStyle);
     m_lookHint = new QLabel;
     m_lookHint->setWordWrap(true);
-    m_lookHint->setStyleSheet("color: #808286; font-size: 11px;");
+    m_lookHint->setProperty("role", "hint");
     subForm->addRow(m_lookHint);
     titleForm->addRow(m_subtitleRows);
     connect(m_wordByWord, &QCheckBox::toggled, this, [this] { apply("wordByWord"); });
@@ -264,13 +266,44 @@ ClipInspector::ClipInspector(QWidget* parent)
     navRow->addStretch();
     navRow->addWidget(m_clearKeys);
     placeForm->addRow(m_keyNav);
+    // Ready-made spots, for stacking a few videos on top of each other
+    struct Spot {
+        const char* name;
+        double size, x, y;
+    };
+    static const Spot spots[] = {
+        { "Full screen", 1.0, 0, 0 },
+        { "Top-left corner", 0.35, -0.295, -0.285 },  { "Top-right corner", 0.35, 0.295, -0.285 },
+        { "Bottom-left corner", 0.35, -0.295, 0.285 }, { "Bottom-right corner", 0.35, 0.295, 0.285 },
+        { "Left half", 0.5, -0.25, 0 },  { "Right half", 0.5, 0.25, 0 },
+        { "Top half", 0.5, 0, -0.25 },   { "Bottom half", 0.5, 0, 0.25 },
+        { "Grid: top left", 0.5, -0.25, -0.25 },    { "Grid: top right", 0.5, 0.25, -0.25 },
+        { "Grid: bottom left", 0.5, -0.25, 0.25 },  { "Grid: bottom right", 0.5, 0.25, 0.25 },
+    };
+    auto* quickSpot = new QComboBox;
+    quickSpot->addItem("Pick a spot…");
+    for (const Spot& s : spots)
+        quickSpot->addItem(s.name);
+    quickSpot->setToolTip("Puts it in a ready-made spot (with the right size). Put another clip on the track below "
+                          "and it shows behind this one.");
+    placeForm->addRow("Quick spot", quickSpot);
+    connect(quickSpot, &QComboBox::activated, this, [this, quickSpot](int i) {
+        quickSpot->setCurrentIndex(0); // it's a shortcut, not a setting
+        if (i <= 0 || m_index < 0)
+            return;
+        const Spot& s = spots[i - 1];
+        m_scale->setValue(s.size * 100);
+        m_posX->setValue(s.x * 100);
+        m_posY->setValue(s.y * 100);
+        apply("quickSpot"); // (one undo step for all three)
+    });
     m_scale = addKeySlider(placeForm, "Size", "scale", VE_KEY_SIZE, 100, 5, 1000, 10, 200, 100, " %");
     m_posX = addKeySlider(placeForm, "Left / right", "posX", VE_KEY_POS_X, 100, -500, 500, -100, 100, 0, " %");
     m_posY = addKeySlider(placeForm, "Up / down", "posY", VE_KEY_POS_Y, 100, -500, 500, -100, 100, 0, " %");
     m_opacity = addKeySlider(placeForm, "Opacity", "opacity", VE_KEY_OPACITY, 100, 0, 100, 0, 100, 100, " %");
     auto* keyHint = new QLabel("◆ adds a keyframe at the playhead. Add two or more and the setting glides between them.");
     keyHint->setWordWrap(true);
-    keyHint->setStyleSheet("color: #808286; font-size: 11px;");
+    keyHint->setProperty("role", "hint");
     placeForm->addRow(keyHint);
     connect(m_prevKey, &QPushButton::clicked, this, [this] { jumpToKey(-1); });
     connect(m_nextKey, &QPushButton::clicked, this, [this] { jumpToKey(1); });
@@ -292,10 +325,8 @@ ClipInspector::ClipInspector(QWidget* parent)
     auto* turnRight = new QPushButton("↻ 90°");
     m_flipH = new QPushButton("Mirror ↔");
     m_flipV = new QPushButton("Flip ↕");
-    for (QPushButton* b : { m_flipH, m_flipV }) {
-        b->setCheckable(true);
-        b->setStyleSheet("QPushButton:checked { background: #2fc6b4; color: black; }"); // lit up when on
-    }
+    for (QPushButton* b : { m_flipH, m_flipV })
+        b->setCheckable(true); // (the theme lights them up when they're on)
     turnLeft->setToolTip("A quarter turn anticlockwise");
     turnRight->setToolTip("A quarter turn clockwise");
     m_flipH->setToolTip("Mirror it left to right");
@@ -359,7 +390,7 @@ ClipInspector::ClipInspector(QWidget* parent)
     zoomForm->addRow(addZoom);
     auto* zoomHint = new QLabel("Replaces any size and position keyframes on this clip. Tweak the result with the ◆ keyframes above.");
     zoomHint->setWordWrap(true);
-    zoomHint->setStyleSheet("color: #808286; font-size: 11px;");
+    zoomHint->setProperty("role", "hint");
     zoomForm->addRow(zoomHint);
     layout->addWidget(m_zoomBox);
 
@@ -429,7 +460,7 @@ ClipInspector::ClipInspector(QWidget* parent)
     m_transitionDuration = addSlider(trForm, "Length", "transitionDuration", 0.1, 10, 0.1, 3, 1.0, " s", 2);
     m_transitionHint = new QLabel;
     m_transitionHint->setWordWrap(true);
-    m_transitionHint->setStyleSheet("color: #808286; font-size: 11px;");
+    m_transitionHint->setProperty("role", "hint");
     trForm->addRow(m_transitionHint);
     layout->addWidget(m_transitionBox);
 
@@ -458,7 +489,7 @@ ClipInspector::ClipInspector(QWidget* parent)
     fadeForm->addRow("Out", m_fadeOut);
     auto* fadeHint = new QLabel("Tip: overlap two clips on different video tracks and fade the top one in for a cross-dissolve.");
     fadeHint->setWordWrap(true);
-    fadeHint->setStyleSheet("color: #808286; font-size: 11px;");
+    fadeHint->setProperty("role", "hint");
     fadeForm->addRow(fadeHint);
     layout->addWidget(m_fadeBox);
     layout->addStretch();

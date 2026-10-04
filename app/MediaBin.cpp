@@ -2,10 +2,15 @@
 // Copyright (C) 2026 Shayan Mazahir. Part of MixMedia Video Editor, see NOTICE.
 
 #include "MediaBin.h"
+#include "CardDelegate.h"
+#include "Icons.h"
+#include "Theme.h"
 
 #include <QDataStream>
 #include <QFileInfo>
+#include <QFontMetricsF>
 #include <QMimeData>
+#include <QMouseEvent>
 #include <QPainter>
 
 namespace {
@@ -21,6 +26,19 @@ MediaBin::MediaBin(QWidget* parent)
     // Careful: Static movement secretly turns dragging off, so this has to come after it.
     setDragEnabled(true);
     setDragDropMode(QAbstractItemView::DragOnly);
+
+    setItemDelegate(new CardDelegate(this)); // files as little cards
+    setMouseTracking(true);                  // (so they light up when hovered)
+}
+
+void MediaBin::mousePressEvent(QMouseEvent* event)
+{
+    // Nothing here yet: the whole drop zone is a big Import button
+    if (count() == 0 && event->button() == Qt::LeftButton) {
+        emit importRequested();
+        return;
+    }
+    QListWidget::mousePressEvent(event);
 }
 
 TimelineClip MediaBin::clipFor(const QListWidgetItem* item) const
@@ -62,9 +80,28 @@ void MediaBin::paintEvent(QPaintEvent* event)
     QListWidget::paintEvent(event);
     if (count() > 0)
         return;
-    // Nothing imported yet? Say how to get started.
+    // Nothing imported yet? A big friendly drop zone.
     QPainter p(viewport());
-    p.setPen(QColor(0x80, 0x82, 0x86));
-    p.drawText(viewport()->rect().adjusted(16, 16, -16, -16), Qt::AlignCenter | Qt::TextWordWrap,
-               "Drag videos, music or pictures in here\n\nor press Import (Ctrl+I)");
+    p.setRenderHint(QPainter::Antialiasing);
+    QRectF zone = QRectF(viewport()->rect()).adjusted(14, 14, -14, -14);
+    p.setPen(QPen(QColor(0x3d, 0x43, 0x4d), 1.5, Qt::DashLine));
+    p.setBrush(QColor(255, 255, 255, 6));
+    p.drawRoundedRect(zone, 12, 12);
+    // Icon, heading and hint stacked in the middle, wrapping when the panel's narrow
+    const QString heading = "Drop your files here", hint = "Videos, music and pictures.\nOr click here to pick them (Ctrl+I).";
+    const int flags = Qt::AlignHCenter | Qt::AlignTop | Qt::TextWordWrap;
+    const QRectF text = zone.adjusted(12, 0, -12, 0);
+    const QFont big = Theme::font(1.25, true), small = Theme::font(0.95);
+    const qreal headingH = QFontMetricsF(big).boundingRect(text, flags, heading).height();
+    const qreal hintH = QFontMetricsF(small).boundingRect(text, flags, hint).height();
+    qreal y = zone.center().y() - (44 + 10 + headingH + 6 + hintH) / 2;
+    Icons::get("import", Theme::colours().accent).paint(&p, QRect(int(zone.center().x()) - 22, int(y), 44, 44));
+    y += 54;
+    p.setFont(big);
+    p.setPen(Theme::colours().text);
+    p.drawText(QRectF(text.left(), y, text.width(), headingH), flags, heading);
+    y += headingH + 6;
+    p.setFont(small);
+    p.setPen(Theme::colours().dim);
+    p.drawText(QRectF(text.left(), y, text.width(), hintH), flags, hint);
 }

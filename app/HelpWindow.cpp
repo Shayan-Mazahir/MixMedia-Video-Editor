@@ -92,8 +92,7 @@ QToolButton* HelpWindow::button(std::function<QString()> page, QWidget* parent)
     b->setToolTip("Help with this");
     b->setFocusPolicy(Qt::NoFocus);
     b->setFixedSize(22, 22);
-    b->setStyleSheet("QToolButton { border: 1px solid #2fc6b4; border-radius: 11px; color: #2fc6b4; font-weight: bold; }"
-                     "QToolButton:hover { background: #2fc6b4; color: black; }");
+    b->setObjectName("help"); // (round, styled by the theme)
     QObject::connect(b, &QToolButton::clicked, b, [page] { open(page()); });
     return b;
 }

@@ -30,7 +30,7 @@ NumberSlider::NumberSlider(double min, double max, double sliderMin, double slid
     m_box->setKeyboardTracking(false); // only apply typed numbers on Enter (no flicker while typing "1.")
     m_box->setButtonSymbols(QAbstractSpinBox::NoButtons);
     m_box->setAlignment(Qt::AlignRight);
-    m_box->setFixedWidth(62);
+    m_box->setFixedWidth(68);
     m_box->setToolTip("Type an exact number");
 
     auto* row = new QHBoxLayout(this);

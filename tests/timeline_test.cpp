@@ -13,11 +13,15 @@
 #include "SubtitleFile.h"
 #include "SubtitlePanel.h"
 #include "TitleRenderer.h"
+#include "UpdateChecker.h"
 #include "ProjectFile.h"
 #include "TimelineWidget.h"
 
 #include <QApplication>
 #include <QDir>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QRegularExpression>
 #include <QDoubleSpinBox>
 #include <QFile>
@@ -1332,6 +1336,73 @@ private slots:
                 QVERIFY2(pages.contains(target), qPrintable(page + " links to a missing page: " + target));
             }
         }
+    }
+
+    void updateCheckPicksTheRightRelease()
+    {
+        using namespace UpdateChecker;
+        const QDateTime now = QDateTime::fromString("2026-10-05T12:00:00Z", Qt::ISODate);
+        auto release = [](const char* tag, bool pre, bool draft, const char* published, const char* body) {
+            return QJsonObject { { "tag_name", tag }, { "prerelease", pre }, { "draft", draft }, { "published_at", published },
+                                 { "html_url", QString("https://example.com/") + tag }, { "body", body } };
+        };
+        const QByteArray json = QJsonDocument(QJsonArray {
+            release("v0.6.0-beta", true, false, "2026-10-04T10:00:00Z", "test"),
+            release("v0.5.2", false, false, "2026-10-05T11:30:00Z", "brand new"),
+            release("v0.5.1", false, false, "2026-10-03T09:00:00Z", "## Hi"),
+            release("v0.7.0", false, true, "", ""),
+            release("v0.4.2", false, false, "2026-09-01T09:00:00Z", ""),
+        }).toJson();
+        const QList<Release> releases = parseReleases(json);
+        QCOMPARE(releases.size(), 5);
+        QCOMPARE(releases[0].version, QVersionNumber(0, 6, 0));
+        QVERIFY(releases[0].preRelease);
+        const QVersionNumber have(0, 5, 0);
+
+        // Releases only: 0.5.2 came out 30 minutes ago, too fresh, so 0.5.1 it is
+        auto r = pickUpdate(releases, have, Channel::Releases, now, {}, false);
+        QVERIFY(r);
+        QCOMPARE(r->tag, QString("v0.5.1"));
+        // An hour later, 0.5.2's had time to get its downloads up
+        r = pickUpdate(releases, have, Channel::Releases, now.addSecs(3600), {}, false);
+        QCOMPARE(r->tag, QString("v0.5.2"));
+        // Pre-releases too: the beta's newest (drafts never count)
+        r = pickUpdate(releases, have, Channel::PreReleases, now, {}, false);
+        QCOMPARE(r->tag, QString("v0.6.0-beta"));
+        // Skipped 0.5.1: nothing to say right now...
+        QVERIFY(!pickUpdate(releases, have, Channel::Releases, now, "v0.5.1", false));
+        // ...but asking by hand ignores the skip and the hour
+        r = pickUpdate(releases, have, Channel::Releases, now, "v0.5.1", true);
+        QCOMPARE(r->tag, QString("v0.5.2"));
+        // Turned off: never on its own
+        QVERIFY(!pickUpdate(releases, have, Channel::Off, now.addDays(10), {}, false));
+        // Already up to date
+        QVERIFY(!pickUpdate(releases, QVersionNumber(0, 5, 2), Channel::Releases, now.addDays(1), {}, false));
+    }
+
+    void droppingUpTopStacksVideos()
+    {
+        // Dropped on the FX tracks = "on top": the top video track's free there, so it goes in that
+        tl->dropClips({ fakeVideo(3) }, { xAt(2.0), trackY(FX1) });
+        QCOMPARE(tl->tracks().size(), 6);
+        QCOMPARE(clip(1).track, V2);
+        QCOMPARE(clip(1).start, 2.0);
+
+        // Again: Video 2's busy now, so a new video track appears on top for it
+        tl->dropClips({ fakeVideo(3) }, { xAt(2.0), trackY(FX1) });
+        QCOMPARE(tl->tracks().size(), 7);
+        QCOMPARE(tl->tracks()[2].kind, TimelineTrack::Kind::Video);
+        QCOMPARE(tl->tracks()[2].name, QString("Video 3"));
+        QCOMPARE(clip(2).track, 2);
+        QCOMPARE(clip(2).start, 2.0);
+        QCOMPARE(clip(1).track, 3); // (the one before moved down a row with its track)
+        // The newest one shows on top of the others
+        QList<RenderClip> r = tl->renderClips();
+        QVERIFY(r[2].layer > r[1].layer && r[1].layer > r[0].layer);
+
+        tl->undo(); // one step: the clip and its new track
+        QCOMPARE(tl->tracks().size(), 6);
+        QCOMPARE(tl->clips().size(), 2);
     }
 
     void crashRecoveryBringsWorkBack()

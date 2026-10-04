@@ -4,6 +4,8 @@ qt_add_library(editor_ui STATIC
     AudioPlayer.cpp
     AutoCaptions.cpp
     AutoCaptions.h
+    CardDelegate.cpp
+    CardDelegate.h
     AudioPlayer.h
     ClipInspector.cpp
     ClipInspector.h
@@ -11,6 +13,8 @@ qt_add_library(editor_ui STATIC
     ExportDialog.h
     FilmstripCache.cpp
     HelpWindow.cpp
+    Icons.cpp
+    Icons.h
     HelpWindow.h
     FilmstripCache.h
     MainWindow.cpp
@@ -37,7 +41,13 @@ qt_add_library(editor_ui STATIC
     TimelineClip.h
     TimelineWidget.cpp
     TimelineWidget.h
+    Theme.cpp
+    Theme.h
     TitleRenderer.cpp
+    UpdateChecker.cpp
+    UpdateChecker.h
+    WelcomeScreen.cpp
+    WelcomeScreen.h
     LibraryPanel.cpp
     LibraryPanel.h
     ClipPresets.h

@@ -53,7 +53,7 @@ void PreviewWidget::paintEvent(QPaintEvent*)
     if (m_frame.isNull()) {
         p.fillRect(r, Qt::black);
         p.setPen(QColor(0x55, 0x55, 0x55));
-        p.drawText(r, Qt::AlignCenter, "Drop something on the timeline to see it here");
+        p.drawText(r.adjusted(12, 0, -12, 0), Qt::AlignCenter | Qt::TextWordWrap, "Drop something on the timeline to see it here");
         return;
     }
     p.setRenderHint(QPainter::SmoothPixmapTransform);

@@ -20,7 +20,7 @@ Welcome! Pick whatever you're stuck on. Press **F1** in MixMedia any time to get
 ## Finishing
 
 - [Exporting](export.md): presets, formats, and getting your video out
-- [Settings](settings.md): project shape, performance, auto-save
+- [Settings](settings.md): light or dark, project shape, performance, auto-save, updates
 
 ## Help!
 

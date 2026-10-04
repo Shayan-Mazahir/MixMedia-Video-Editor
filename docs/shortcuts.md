@@ -47,3 +47,9 @@
 | Ctrl+I | Import media |
 | Ctrl+E | Export |
 | F1 | This help |
+
+## The window
+
+| Key | What it does |
+|---|---|
+| F11 | Full screen (F11 again to leave) |

@@ -121,6 +121,10 @@ protected:
     void wheelEvent(QWheelEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
     void contextMenuEvent(QContextMenuEvent* event) override;
+    void leaveEvent(QEvent* event) override;
+    void showAddTrackMenu(const QPoint& globalPos);
+    QRect addTrackButton() const { return QRect(6, 4, HeaderWidth - 12, RulerHeight - 8); } // top-left corner
+    void changeEvent(QEvent* event) override;
 
 private:
     enum class Drag { None, Playhead, Move, TrimLeft, TrimRight, Box };
@@ -193,7 +197,7 @@ private:
 
     void drawRuler(QPainter& p);
     void drawTracks(QPainter& p);
-    void drawClip(QPainter& p, const TimelineClip& clip, bool selected, bool ghost);
+    void drawClip(QPainter& p, const TimelineClip& clip, bool selected, bool ghost, bool hovered = false);
     void drawFilmstrip(QPainter& p, const TimelineClip& clip, const QRectF& r);
     void drawWaveform(QPainter& p, const TimelineClip& clip, const QRectF& r);
     void drawFades(QPainter& p, const TimelineClip& clip, const QRectF& r);
@@ -210,6 +214,7 @@ private:
     QList<QPair<int, int>> m_followers; // transition blocks sticking to a moving clip: (block, clip)
     QPoint m_boxFrom, m_boxTo;        // dragging out a selection box
     bool m_boxing = false;
+    int m_hover = -1; // the clip under the mouse (it lights up a little)
 
     QList<Snapshot> m_undo;
     QList<Snapshot> m_redo;

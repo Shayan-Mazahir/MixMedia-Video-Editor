@@ -67,7 +67,7 @@ SubtitlePanel::SubtitlePanel(TimelineWidget* timeline, QWidget* parent)
     layout->addLayout(bottom);
     auto* hint = new QLabel("Double-click to change a time or the words. Times are minutes:seconds.");
     hint->setWordWrap(true);
-    hint->setStyleSheet("color: #808286; font-size: 11px;");
+    hint->setProperty("role", "hint");
     layout->addWidget(hint);
 
     connect(add, &QPushButton::clicked, this, &SubtitlePanel::addLine);

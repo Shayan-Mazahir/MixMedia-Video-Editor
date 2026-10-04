@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shayan Mazahir. Part of MixMedia Video Editor, see NOTICE.
 
 #include "TimelineWidget.h"
+#include "Theme.h"
 #include "FilmstripCache.h"
 #include "ClipPresets.h"
 #include "MediaBin.h"
@@ -22,21 +23,14 @@
 #include <limits>
 
 namespace {
-const QColor Background(0x17, 0x18, 0x1a);
-const QColor RulerBg(0x22, 0x23, 0x26);
-const QColor TrackBg(0x1c, 0x1d, 0x20);
-const QColor HeaderBg(0x26, 0x27, 0x2b);
-const QColor Lines(0x33, 0x35, 0x39);
-const QColor Dim(0x80, 0x82, 0x86);
 const QColor Accent(0x2f, 0xc6, 0xb4);
-const QColor VideoClip(0x2a, 0x5d, 0x7a);
-const QColor AudioClip(0x2e, 0x6b, 0x4f);
-const QColor TitleClip(0x6a, 0x4c, 0x9c);
-const QColor SubtitleClip(0x9c, 0x4c, 0x7a);
-const QColor EffectClip(0x8a, 0x66, 0x1c);
-const QColor TransitionClip(0x3d, 0x6f, 0xa8);
-const QColor FxTrackBg(0x1f, 0x1c, 0x19);
-const QColor Playhead(0xff, 0x4d, 0x4d);
+const QColor VideoClip(0x2f, 0x6c, 0x96);
+const QColor AudioClip(0x2b, 0x82, 0x5a);
+const QColor TitleClip(0x77, 0x58, 0xc0);
+const QColor SubtitleClip(0xc0, 0x55, 0x93);
+const QColor EffectClip(0xbd, 0x86, 0x22);
+const QColor TransitionClip(0x3c, 0x7c, 0xcc);
+const QColor Playhead(0xff, 0x5a, 0x5f);
 
 constexpr double MinClipSeconds = 0.1;
 constexpr double MinZoom = 0.02;   // pixels per second, zoomed way out
@@ -1712,10 +1706,34 @@ void TimelineWidget::dropClips(const QList<TimelineClip>& clips, const QPoint& p
         else
             others << c;
     }
-    QList<TimelineClip> placed = layoutDrop(others, pos);
+    // Footage dropped up on the FX tracks = "on top of everything", like other editors. If the top
+    // video track is busy there, a new one goes on top for it.
+    QPoint at = pos;
+    const int wanted = trackAt(pos.y());
+    double length = 0;
+    bool footage = false;
+    for (const TimelineClip& c : others) {
+        length += c.duration;
+        footage |= c.showsVideo() && !c.belongsOnFx();
+    }
+    if (footage && wanted >= 0 && (m_tracks[wanted].kind == TimelineTrack::Kind::Fx || m_tracks[wanted].kind == TimelineTrack::Kind::Subtitles)) {
+        int top = -1;
+        for (int i = 0; i < m_tracks.size() && top < 0; ++i)
+            if (m_tracks[i].kind == TimelineTrack::Kind::Video)
+                top = i;
+        const double start = std::max(0.0, xToSec(pos.x()));
+        if (top < 0 || freeStart(m_clips, top, start, length) != start)
+            top = insertTrack(TimelineTrack::Kind::Video, -1);
+        at.setY(trackTop(top) + trackHeight(top) / 2);
+    }
+
+    QList<TimelineClip> placed = layoutDrop(others, at);
     m_clips << placed;
-    if (!added && placed.isEmpty())
+    if (!added && placed.isEmpty()) {
+        m_clips = before.clips; // (nothing landed: no new track either)
+        m_tracks = before.tracks;
         return;
+    }
 
     m_undo << before;
     m_redo.clear();
@@ -1732,6 +1750,10 @@ void TimelineWidget::mousePressEvent(QMouseEvent* event)
     if (event->button() != Qt::LeftButton)
         return;
     QPoint pos = event->position().toPoint();
+    if (addTrackButton().contains(pos)) {
+        showAddTrackMenu(mapToGlobal(addTrackButton().bottomLeft()));
+        return;
+    }
     if (pos.x() < HeaderWidth)
         return;
 
@@ -1813,6 +1835,10 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event)
             setCursor(Qt::SizeHorCursor);
         else
             unsetCursor();
+        if (hit != m_hover) {
+            m_hover = hit;
+            invalidate();
+        }
         return;
     }
     case Drag::Playhead:
@@ -1932,9 +1958,9 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event)
         int track = trackAt(pos.y());
         QMenu menu(this);
         using K = TimelineTrack::Kind;
-        menu.addAction("Add an FX track (titles, effects, transitions)", this, [this] { addTrack(K::Fx); });
-        menu.addAction("Add a video track", this, [this] { addTrack(K::Video); });
+        menu.addAction("Add a video track (shows on top of the ones below)", this, [this] { addTrack(K::Video); });
         menu.addAction("Add an audio track", this, [this] { addTrack(K::Audio); });
+        menu.addAction("Add an FX track (titles, effects, transitions)", this, [this] { addTrack(K::Fx); });
         if (track >= 0) {
             menu.addSeparator();
             QAction* remove = menu.addAction(QString("Remove \"%1\"").arg(m_tracks[track].name), this,
@@ -2014,12 +2040,12 @@ void TimelineWidget::paintEvent(QPaintEvent*)
         m_cache.setDevicePixelRatio(dpr);
         QPainter c(&m_cache);
         c.setRenderHint(QPainter::Antialiasing);
-        c.fillRect(rect(), Background);
+        c.fillRect(rect(), Theme::colours().window);
         drawTracks(c);
         c.save();
         c.setClipRect(contentRect());
         for (int i = 0; i < m_clips.size(); ++i)
-            drawClip(c, m_clips[i], m_selection.contains(i), false);
+            drawClip(c, m_clips[i], m_selection.contains(i), false, i == m_hover);
         for (const TimelineClip& ghost : m_ghosts)
             drawClip(c, ghost, false, true);
         c.restore();
@@ -2043,8 +2069,11 @@ void TimelineWidget::paintEvent(QPaintEvent*)
 
 void TimelineWidget::drawRuler(QPainter& p)
 {
-    p.fillRect(0, 0, width(), RulerHeight, RulerBg);
-    p.setPen(Lines);
+    QLinearGradient bg(0, 0, 0, RulerHeight);
+    bg.setColorAt(0, Theme::colours().ruler.lighter(112));
+    bg.setColorAt(1, Theme::colours().ruler);
+    p.fillRect(0, 0, width(), RulerHeight, bg);
+    p.setPen(Theme::colours().lines);
     p.drawLine(0, RulerHeight - 1, width(), RulerHeight - 1);
 
     // Pick a label spacing that doesn't get cramped when zoomed out
@@ -2058,9 +2087,7 @@ void TimelineWidget::drawRuler(QPainter& p)
     }
     double minor = major / 5.0;
 
-    QFont font = p.font();
-    font.setPixelSize(10);
-    p.setFont(font);
+    p.setFont(Theme::font(0.8));
 
     long first = std::max(0L, long(std::floor(xToSec(HeaderWidth) / minor)));
     long last = long(std::ceil(xToSec(width()) / minor));
@@ -2068,45 +2095,61 @@ void TimelineWidget::drawRuler(QPainter& p)
         double s = n * minor;
         int x = int(secToX(s));
         bool isMajor = n % 5 == 0;
-        p.setPen(isMajor ? Dim : Lines);
-        p.drawLine(x, RulerHeight - (isMajor ? 12 : 6), x, RulerHeight - 1);
-        if (isMajor)
-            p.drawText(x + 3, RulerHeight - 14, formatTime(s));
+        p.setPen(isMajor ? Theme::colours().ticks : Theme::colours().lines);
+        p.drawLine(x, RulerHeight - (isMajor ? 10 : 5), x, RulerHeight - 1);
+        if (isMajor) {
+            p.setPen(Theme::colours().rulerText);
+            p.drawText(x + 4, RulerHeight - 12, formatTime(s));
+        }
     }
 
-    p.fillRect(0, 0, HeaderWidth, RulerHeight, RulerBg);
+    p.fillRect(0, 0, HeaderWidth, RulerHeight, bg);
+    p.setPen(Theme::colours().lines);
+    p.drawLine(HeaderWidth - 1, 0, HeaderWidth - 1, RulerHeight);
+    // "+ Track" in the corner, for adding tracks
+    QRectF plus = addTrackButton();
+    p.setPen(QPen(Theme::colours().border, 1));
+    p.setBrush(Theme::colours().control);
+    p.drawRoundedRect(plus.adjusted(0.5, 0.5, -0.5, -0.5), 5, 5);
+    p.setPen(Theme::colours().text);
+    p.drawText(plus, Qt::AlignCenter, "+ Track");
 }
 
 void TimelineWidget::drawTracks(QPainter& p)
 {
-    QFont font = p.font();
-    font.setPixelSize(11);
-    p.setFont(font);
+    p.setFont(Theme::font(0.88));
 
     for (int i = 0; i < m_tracks.size(); ++i) {
         QRect t = trackRect(i);
         const TimelineTrack::Kind kind = m_tracks[i].kind;
         bool fx = kind == TimelineTrack::Kind::Fx || kind == TimelineTrack::Kind::Subtitles;
-        p.fillRect(t, fx ? FxTrackBg : TrackBg);
-        p.fillRect(0, t.top(), HeaderWidth, t.height(), HeaderBg);
-        // A coloured strip on the left says what kind of track it is
-        QColor strip = kind == TimelineTrack::Kind::Subtitles ? SubtitleClip
-                       : kind == TimelineTrack::Kind::Fx      ? EffectClip
-                       : kind == TimelineTrack::Kind::Video   ? VideoClip
-                                                              : AudioClip;
-        p.fillRect(0, t.top(), 3, t.height(), strip);
+        p.fillRect(t, fx ? Theme::colours().fxTrack : (i % 2 ? Theme::colours().track : Theme::colours().track.lighter(104)));
+        QLinearGradient header(0, 0, HeaderWidth, 0);
+        header.setColorAt(0, Theme::colours().header.lighter(108));
+        header.setColorAt(1, Theme::colours().header);
+        p.fillRect(0, t.top(), HeaderWidth, t.height(), header);
+        // A coloured dot (and a faint strip) says what kind of track it is
+        QColor kindColour = kind == TimelineTrack::Kind::Subtitles ? SubtitleClip
+                            : kind == TimelineTrack::Kind::Fx      ? EffectClip
+                            : kind == TimelineTrack::Kind::Video   ? VideoClip
+                                                                   : AudioClip;
+        p.fillRect(0, t.top(), 2, t.height(), kindColour);
+        p.setPen(Qt::NoPen);
+        p.setBrush(kindColour.lighter(130));
+        p.drawEllipse(QPointF(13, t.center().y() + 0.5), 3.5, 3.5);
 
-        p.setPen(Lines);
+        p.setPen(Theme::colours().lines);
         p.drawLine(0, t.bottom(), width(), t.bottom());
         p.drawLine(HeaderWidth - 1, t.top(), HeaderWidth - 1, t.bottom());
 
-        p.setPen(Dim);
-        p.drawText(QRect(10, t.top(), HeaderWidth - 10, t.height()), Qt::AlignVCenter, m_tracks[i].name);
+        p.setPen(Theme::colours().headerText);
+        p.drawText(QRect(23, t.top(), HeaderWidth - 26, t.height()), Qt::AlignVCenter,
+                   p.fontMetrics().elidedText(m_tracks[i].name, Qt::ElideRight, HeaderWidth - 26));
     }
 
     int bottom = tracksBottom();
     if (m_clips.isEmpty() && bottom < height()) {
-        p.setPen(Dim);
+        p.setPen(Theme::colours().dim);
         p.drawText(QRect(HeaderWidth, bottom, width() - HeaderWidth, height() - bottom),
                    Qt::AlignCenter, "Drag clips here (or double-click them in Media) to start editing.\nRight-click a track name to add more tracks.");
     }
@@ -2146,7 +2189,39 @@ void TimelineWidget::drawFilmstrip(QPainter& p, const TimelineClip& clip, const 
     }
 }
 
-void TimelineWidget::drawClip(QPainter& p, const TimelineClip& clip, bool selected, bool ghost)
+void TimelineWidget::changeEvent(QEvent* event)
+{
+    QWidget::changeEvent(event);
+    if (event->type() == QEvent::PaletteChange || event->type() == QEvent::StyleChange)
+        invalidate(); // the theme changed: redraw in its colours
+}
+
+void TimelineWidget::showAddTrackMenu(const QPoint& globalPos)
+{
+    QMenu menu(this);
+    using K = TimelineTrack::Kind;
+    menu.addAction("Video track (shows on top of the ones below)", this, [this] { addTrack(K::Video); });
+    menu.addAction("Audio track", this, [this] { addTrack(K::Audio); });
+    menu.addAction("FX track (titles, effects, transitions)", this, [this] { addTrack(K::Fx); });
+    menu.addAction("Subtitles track", this, [this] {
+        m_undo << Snapshot { m_clips, m_tracks };
+        m_redo.clear();
+        insertTrack(K::Subtitles, 0);
+        changed();
+    });
+    menu.exec(globalPos);
+}
+
+void TimelineWidget::leaveEvent(QEvent* event)
+{
+    QWidget::leaveEvent(event);
+    if (m_hover >= 0) {
+        m_hover = -1;
+        invalidate();
+    }
+}
+
+void TimelineWidget::drawClip(QPainter& p, const TimelineClip& clip, bool selected, bool ghost, bool hovered)
 {
     QRectF r = clipRect(clip);
     if (r.right() < HeaderWidth || r.left() > width())
@@ -2157,14 +2232,21 @@ void TimelineWidget::drawClip(QPainter& p, const TimelineClip& clip, bool select
         p.setOpacity(0.45);
 
     QPainterPath shape;
-    shape.addRoundedRect(r, 4, 4);
+    shape.addRoundedRect(r, 6, 6);
     QColor fill = clip.isSubtitle()     ? SubtitleClip
                   : clip.isTitle()      ? TitleClip
                   : clip.isEffect()     ? EffectClip
                   : clip.isTransition() ? TransitionClip
                   : clip.audioOnly()    ? AudioClip
                                         : VideoClip;
-    p.fillPath(shape, fill);
+    if (hovered)
+        fill = fill.lighter(112); // (under the mouse: a little brighter)
+    // A soft gradient, lighter at the top
+    QLinearGradient body(0, r.top(), 0, r.bottom());
+    body.setColorAt(0, fill.lighter(122));
+    body.setColorAt(0.5, fill);
+    body.setColorAt(1, fill.darker(118));
+    p.fillPath(shape, body);
     p.setClipPath(shape, Qt::IntersectClip);
 
     if (clip.isTransition()) {
@@ -2211,10 +2293,7 @@ void TimelineWidget::drawClip(QPainter& p, const TimelineClip& clip, bool select
     drawKeyframes(p, clip, r);
 
     // Name tag in the corner, on a dark pill so it's readable over any picture
-    QFont font = p.font();
-    font.setPixelSize(11);
-    font.setBold(false);
-    p.setFont(font);
+    p.setFont(Theme::font(0.85));
     QString icon = clip.isTitle()       ? QStringLiteral("T  ")
                    : clip.isEffect()  ? QStringLiteral("fx  ")
                    : clip.audioOnly() ? QStringLiteral("♪ ")
@@ -2230,29 +2309,40 @@ void TimelineWidget::drawClip(QPainter& p, const TimelineClip& clip, bool select
     int maxText = int(r.right() - visibleLeft - 14);
     if (maxText > 20) {
         QString text = p.fontMetrics().elidedText(label, Qt::ElideRight, maxText);
-        QRectF tag(visibleLeft + 4, r.top() + 4, p.fontMetrics().horizontalAdvance(text) + 8, 16);
+        QRectF tag(visibleLeft + 4, r.top() + 4, p.fontMetrics().horizontalAdvance(text) + 8, p.fontMetrics().height() + 2);
         p.setPen(Qt::NoPen);
-        p.setBrush(QColor(0, 0, 0, 150));
-        p.drawRoundedRect(tag, 3, 3);
+        p.setBrush(QColor(10, 12, 16, 165));
+        p.drawRoundedRect(tag, 4, 4);
         p.setPen(Qt::white);
         p.drawText(tag, Qt::AlignCenter, text);
     }
 
+    // A thin shine along the top edge
+    p.setPen(QPen(QColor(255, 255, 255, 40), 1));
+    p.drawLine(QPointF(r.left() + 5, r.top() + 1.5), QPointF(r.right() - 5, r.top() + 1.5));
+
     p.setClipping(false);
     p.setBrush(Qt::NoBrush);
     if (selected || ghost) {
+        if (selected) {
+            // A soft glow around it
+            QColor glow = Accent;
+            glow.setAlpha(70);
+            p.setPen(QPen(glow, 5));
+            p.drawRoundedRect(r.adjusted(-1, -1, 1, 1), 7, 7);
+        }
         p.setPen(QPen(ghost ? Qt::white : Accent, 2));
-        p.drawRoundedRect(r.adjusted(1, 1, -1, -1), 4, 4);
+        p.drawRoundedRect(r.adjusted(1, 1, -1, -1), 6, 6);
         if (selected) {
             // Little handles on the edges, so it's obvious you can trim
-            p.setBrush(Accent);
+            p.setBrush(Qt::white);
             p.setPen(Qt::NoPen);
-            p.drawRoundedRect(QRectF(r.left(), r.top() + r.height() / 2 - 10, 4, 20), 2, 2);
-            p.drawRoundedRect(QRectF(r.right() - 4, r.top() + r.height() / 2 - 10, 4, 20), 2, 2);
+            p.drawRoundedRect(QRectF(r.left() + 2, r.top() + r.height() / 2 - 9, 3, 18), 1.5, 1.5);
+            p.drawRoundedRect(QRectF(r.right() - 5, r.top() + r.height() / 2 - 9, 3, 18), 1.5, 1.5);
         }
     } else {
-        p.setPen(QPen(QColor(0, 0, 0, 120), 1));
-        p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 4, 4);
+        p.setPen(QPen(hovered ? QColor(255, 255, 255, 90) : QColor(0, 0, 0, 140), 1));
+        p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 6, 6);
     }
     p.restore();
 }
@@ -2326,10 +2416,18 @@ void TimelineWidget::drawPlayhead(QPainter& p)
     if (x < HeaderWidth || x > width())
         return;
 
-    p.setPen(QPen(Playhead, 2));
-    p.drawLine(QPointF(x, 0), QPointF(x, height()));
-    p.setBrush(Playhead);
+    // A soft glow, the line, and a handle up in the ruler to grab
+    QColor glow = Playhead;
+    glow.setAlpha(55);
+    p.setPen(QPen(glow, 5));
+    p.drawLine(QPointF(x, RulerHeight), QPointF(x, height()));
+    p.setPen(QPen(Playhead, 1.5));
+    p.drawLine(QPointF(x, 4), QPointF(x, height()));
     p.setPen(Qt::NoPen);
-    const QPointF head[] = { { x - 6, 0 }, { x + 6, 0 }, { x, 8 } };
-    p.drawPolygon(head, 3);
+    p.setBrush(Playhead);
+    QPainterPath handle;
+    handle.addRoundedRect(QRectF(x - 6, 2, 12, 12), 3.5, 3.5);
+    const QPointF tip[] = { { x - 5, 12 }, { x + 5, 12 }, { x, 18 } };
+    handle.addPolygon(QPolygonF(QList<QPointF>(std::begin(tip), std::end(tip))));
+    p.drawPath(handle.simplified());
 }

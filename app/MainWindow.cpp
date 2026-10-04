@@ -5,11 +5,16 @@
 #include "AudioPlayer.h"
 #include "AppSettings.h"
 #include "AutoCaptions.h"
+#include "CardDelegate.h"
 #include "ExportDialog.h"
 #include "HelpWindow.h"
+#include "Icons.h"
 #include "SettingsDialog.h"
 #include "SubtitleFile.h"
 #include "SubtitlePanel.h"
+#include "Theme.h"
+#include "UpdateChecker.h"
+#include "WelcomeScreen.h"
 #include "MediaBin.h"
 #include "PreviewRenderer.h"
 #include "PreviewWidget.h"
@@ -54,8 +59,12 @@
 #include <QMessageBox>
 #include <QPainter>
 #include <QProcess>
+#include <QPropertyAnimation>
 #include <QProgressDialog>
 #include <QPushButton>
+#include <QResizeEvent>
+#include <QScreen>
+#include <QSettings>
 #include <QSplitter>
 #include <QTabWidget>
 #include <QStandardPaths>
@@ -74,8 +83,8 @@
 
 namespace {
 
-constexpr int ThumbW = 160;
-constexpr int ThumbH = 90;
+constexpr int ThumbW = 144;
+constexpr int ThumbH = 81;
 
 QString formatDuration(double seconds)
 {
@@ -89,9 +98,12 @@ QString formatDuration(double seconds)
 }
 
 // 01:02:03.45 style, for the clock under the preview
-QString formatClock(double seconds)
+// hours = show the hours too (only worth it for videos an hour or longer)
+QString formatClock(double seconds, bool hours = true)
 {
     int cs = int(seconds * 100 + 0.5);
+    if (!hours)
+        return QString::asprintf("%02d:%02d.%02d", cs / 6000, (cs / 100) % 60, cs % 100);
     return QString::asprintf("%02d:%02d:%02d.%02d", cs / 360000, (cs / 6000) % 60, (cs / 100) % 60, cs % 100);
 }
 
@@ -153,11 +165,12 @@ MainWindow::MainWindow(QWidget* parent)
 {
     m_timeline = new TimelineWidget;
     m_inspector = new ClipInspector;
-    m_inspector->setMinimumWidth(310);
+    m_inspector->setMinimumWidth(350);
 
-    auto* top = new QSplitter(Qt::Horizontal);
+    auto* top = m_top = new QSplitter(Qt::Horizontal);
     // Left side: tabs for media and transitions
-    auto* library = new QTabWidget;
+    auto* library = m_library = new QTabWidget;
+    library->setMinimumWidth(220);
     library->setDocumentMode(true);
     library->addTab(buildMediaPanel(), "Media");
     // Ready-made blocks for the FX tracks: drag them on, or double-click to drop one at the playhead
@@ -174,17 +187,23 @@ MainWindow::MainWindow(QWidget* parent)
     m_subtitles = new SubtitlePanel(m_timeline);
     library->addTab(m_subtitles, "Subtitles");
     top->addWidget(library);
-    top->addWidget(buildPreviewPanel());
+    m_previewPanel = buildPreviewPanel();
+    top->addWidget(m_previewPanel);
+    top->setCollapsible(1, false); // (the preview never disappears)
     top->addWidget(m_inspector);
     top->setStretchFactor(0, 2);
     top->setStretchFactor(1, 4);
     top->setStretchFactor(2, 1);
 
-    auto* main = new QSplitter(Qt::Vertical);
+    auto* main = m_main = new QSplitter(Qt::Vertical);
     main->addWidget(top);
     main->addWidget(m_timeline);
     main->setStretchFactor(0, 3);
     main->setStretchFactor(1, 2);
+    // A little breathing room between the panels
+    top->setHandleWidth(6);
+    main->setHandleWidth(6);
+    main->setContentsMargins(6, 6, 6, 0);
     setCentralWidget(main);
 
     buildActions();
@@ -274,7 +293,7 @@ void MainWindow::clearAutoSave()
     QFile::remove(dir.filePath(m_autoSaveId + ".txt"));
 }
 
-void MainWindow::offerRecovery()
+bool MainWindow::offerRecovery()
 {
     // Auto-saves whose lock nobody holds any more belong to a MixMedia that didn't close properly
     QDir dir(autoSaveFolder());
@@ -293,7 +312,7 @@ void MainWindow::offerRecovery()
             newest = f;
     }
     if (orphans.isEmpty())
-        return;
+        return false;
 
     auto forget = [&] {
         for (const QString& id : orphans)
@@ -315,13 +334,56 @@ void MainWindow::offerRecovery()
                 "Open it?")
             .arg(name, QLocale().toString(newest.lastModified(), QLocale::ShortFormat)),
         QMessageBox::Open | QMessageBox::Discard, QMessageBox::Open);
+    bool recovered = false;
     if (answer == QMessageBox::Open && loadProject(newest.filePath())) {
         // It's still unsaved work: point it back at the real project and leave it marked as changed
         m_projectPath = original;
         setDirty(true);
         statusBar()->showMessage("Recovered your auto-saved work. Save it to keep it!", 8000);
+        recovered = true;
     }
     forget();
+    return recovered;
+}
+
+// ---- Welcome & recent projects ----
+
+QStringList MainWindow::recentProjects()
+{
+    return QSettings().value("recent/projects").toStringList();
+}
+
+void MainWindow::rememberRecent(const QString& path)
+{
+    if (path.isEmpty() || path.startsWith(autoSaveFolder()))
+        return; // (auto-saves aren't projects you'd pick)
+    QString full = QFileInfo(path).absoluteFilePath();
+    QStringList list = recentProjects();
+    list.removeAll(full);
+    list.prepend(full);
+    QSettings().setValue("recent/projects", list.mid(0, 10));
+}
+
+void MainWindow::showWelcome(bool always)
+{
+    if (!always && !WelcomeScreen::showAtStartup())
+        return;
+    WelcomeScreen welcome(recentProjects(), this);
+    // A gentle fade in
+    auto* fade = new QPropertyAnimation(&welcome, "windowOpacity", &welcome);
+    welcome.setWindowOpacity(0.0);
+    fade->setDuration(220);
+    fade->setStartValue(0.0);
+    fade->setEndValue(1.0);
+    fade->setEasingCurve(QEasingCurve::OutCubic);
+    QTimer::singleShot(0, fade, [fade] { fade->start(); });
+    welcome.exec();
+    switch (welcome.choice()) {
+    case WelcomeScreen::Choice::Open: openProject(); break;
+    case WelcomeScreen::Choice::Import: importMedia(); break;
+    case WelcomeScreen::Choice::Recent: loadProject(welcome.recentPath()); break;
+    default: break; // new (or closed it): the empty project's already there
+    }
 }
 
 // ---- Building the window ----
@@ -371,7 +433,28 @@ void MainWindow::buildActions()
     QAction* fit = make("Fit", { QKeySequence("Ctrl+0") }, "Fit the whole timeline", [this] { m_timeline->zoomToFit(); });
 
     QMenu* file = menuBar()->addMenu("&File");
-    file->addActions({ newProject, open, save, saveAs });
+    file->addActions({ newProject, open });
+    // Open recent: filled in fresh each time it's opened
+    m_recentMenu = file->addMenu("Open &recent");
+    connect(m_recentMenu, &QMenu::aboutToShow, this, [this] {
+        m_recentMenu->clear();
+        for (const QString& path : recentProjects()) {
+            if (!QFileInfo::exists(path))
+                continue;
+            m_recentMenu->addAction(QFileInfo(path).completeBaseName(), this, [this, path] {
+                if (maybeSave())
+                    loadProject(path);
+            })->setToolTip(path);
+        }
+        if (m_recentMenu->isEmpty())
+            m_recentMenu->addAction("(nothing yet)")->setEnabled(false);
+        m_recentMenu->addSeparator();
+        m_recentMenu->addAction("Show the welcome screen", this, [this] {
+            if (maybeSave())
+                showWelcome(true);
+        });
+    });
+    file->addActions({ save, saveAs });
     file->addSeparator();
     file->addActions({ import, exportAction });
     file->addActions({ importSubs, exportSubs });
@@ -388,6 +471,36 @@ void MainWindow::buildActions()
     edit->addAction(settingsWindow);
     QMenu* view = menuBar()->addMenu("&View");
     view->addActions({ zoomIn, zoomOut, fit });
+    view->addSeparator();
+    // The panels: hide the ones you don't need for a bigger preview and timeline
+    m_showLibrary = view->addAction("Show the &library", this, [this](bool on) { m_library->setVisible(on); });
+    m_showProperties = view->addAction("Show &properties", this, [this](bool on) { m_inspector->setVisible(on); });
+    for (QAction* a : { m_showLibrary, m_showProperties }) {
+        a->setCheckable(true);
+        a->setChecked(true);
+    }
+    m_focusPreview = view->addAction("&Focus on the preview", this, [this](bool on) {
+        // Both side panels away (and back again)
+        m_showLibrary->setChecked(!on);
+        m_showProperties->setChecked(!on);
+        m_library->setVisible(!on);
+        m_inspector->setVisible(!on);
+    });
+    m_focusPreview->setCheckable(true);
+    m_fullScreen = view->addAction("F&ull screen", this, [this](bool on) {
+        if (on) {
+            m_wasMaximized = isMaximized();
+            showFullScreen();
+        } else if (m_wasMaximized) {
+            showMaximized();
+        } else {
+            showNormal();
+        }
+    });
+    m_fullScreen->setCheckable(true);
+    m_fullScreen->setShortcut(Qt::Key_F11); // (the standard one is Ctrl+Shift+F on KDE, which is freeze frame)
+    view->addSeparator();
+    view->addAction("&Reset the layout", this, &MainWindow::resetLayout);
     // Getting around. These work from anywhere in the window.
     QMenu* playback = menuBar()->addMenu("&Playback");
     playback->addAction(make("&Play / pause", { QKeySequence(Qt::Key_Space) }, "Play or pause", &MainWindow::togglePlay));
@@ -407,11 +520,12 @@ void MainWindow::buildActions()
                               [] { HelpWindow::open(); });
     help->addAction(helpPages);
     help->addAction(make("&Keyboard shortcuts", {}, "Every shortcut in one place", [] { HelpWindow::open("shortcuts.md"); }));
+    help->addAction(make("Check for &updates…", {}, "See if there's a newer MixMedia", [this] { UpdateChecker::checkNow(this); }));
     help->addSeparator();
     help->addAction(make("&About MixMedia", {}, "Who made this, and the licence", &MainWindow::showAbout));
     help->addAction(make("About &Qt", {}, "About the Qt toolkit", [] { QApplication::aboutQt(); }));
 
-    QToolBar* bar = addToolBar("Main");
+    QToolBar* bar = m_toolbar = addToolBar("Main");
     bar->setMovable(false);
     bar->setToolButtonStyle(Qt::ToolButtonTextOnly);
     bar->addAction(import);
@@ -421,6 +535,24 @@ void MainWindow::buildActions()
     bar->addActions({ split, del, detach, title });
     bar->addSeparator();
     bar->addActions({ zoomOut, zoomIn, fit });
+    // Icons beside the words
+    bar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    // Icons as big as the text (bigger system fonts get bigger icons)
+    const int iconSize = std::max(16, int(QFontMetrics(Theme::font()).height() * 0.95));
+    bar->setIconSize(QSize(iconSize, iconSize));
+    const QList<QPair<QAction*, const char*>> icons = {
+        { import, "import" }, { undo, "undo" }, { redo, "redo" }, { split, "split" }, { del, "delete" },
+        { detach, "detach" }, { title, "title" }, { zoomOut, "zoom-out" }, { zoomIn, "zoom-in" }, { fit, "fit" },
+        { captions, "captions" },
+    };
+    for (const auto& [action, icon] : icons)
+        m_actionIcons << qMakePair(action, QString(icon));
+    refreshIcons();
+    exportAction->setIcon(Icons::get("export", QColor(0x07, 0x13, 0x12)));
+    // Zooming is clear enough from its icons alone, and it leaves room for everything else
+    for (QAction* a : { zoomOut, zoomIn, fit })
+        if (auto* b = qobject_cast<QToolButton*>(bar->widgetForAction(a)))
+            b->setToolButtonStyle(Qt::ToolButtonIconOnly);
     // Toolbar buttons can use shorter names than the menu
     split->setIconText("Split");
     del->setIconText("Delete");
@@ -434,8 +566,7 @@ void MainWindow::buildActions()
     bar->addWidget(spacer);
     bar->addAction(exportAction);
     if (auto* button = qobject_cast<QToolButton*>(bar->widgetForAction(exportAction)))
-        button->setStyleSheet("QToolButton { background: #2fc6b4; color: black; font-weight: bold;"
-                              " padding: 4px 14px; border-radius: 4px; }");
+        button->setObjectName("primary"); // (the theme makes it the big bright one)
     // The way into the help, always in the corner
     auto* helpCorner = new QWidget;
     auto* helpLayout = new QHBoxLayout(helpCorner);
@@ -455,7 +586,8 @@ QWidget* MainWindow::buildMediaPanel()
 
     m_mediaBin = new MediaBin;
     m_mediaBin->setIconSize(QSize(ThumbW, ThumbH));
-    m_mediaBin->setGridSize(QSize(ThumbW + 20, ThumbH + 44));
+    m_mediaBin->setGridSize(QSize(ThumbW + 20, ThumbH + 48));
+    connect(m_mediaBin, &MediaBin::importRequested, this, &MainWindow::importMedia);
     m_mediaBin->setResizeMode(QListView::Adjust);
     m_mediaBin->setWordWrap(true);
     m_mediaBin->setSelectionMode(QAbstractItemView::ExtendedSelection);
@@ -497,10 +629,12 @@ QWidget* MainWindow::buildPreviewPanel()
 {
     auto* panel = new QWidget;
     auto* layout = new QVBoxLayout(panel);
-    layout->setContentsMargins(4, 8, 8, 8);
+    layout->setContentsMargins(10, 8, 10, 8);
+    panel->setObjectName("card"); // (a rounded panel, like the library's)
+    panel->setAttribute(Qt::WA_StyledBackground);
 
     auto* title = new QLabel("Preview");
-    title->setStyleSheet("font-weight: bold;");
+    title->setProperty("role", "heading");
     layout->addWidget(title);
 
     m_preview = new PreviewWidget;
@@ -508,21 +642,26 @@ QWidget* MainWindow::buildPreviewPanel()
 
     // Little control strip under the picture
     auto* controls = new QHBoxLayout;
-    auto makeButton = [](const QString& text, const QString& tip) {
+    auto makeButton = [](const QString& icon, const QString& tip) {
         auto* b = new QToolButton;
-        b->setText(text);
+        b->setIcon(Icons::get(icon));
+        b->setIconSize(QSize(18, 18));
         b->setToolTip(tip);
         b->setFocusPolicy(Qt::NoFocus);
-        b->setMinimumWidth(36);
+        b->setFixedSize(34, 30);
         return b;
     };
-    QToolButton* startButton = makeButton("⏮", "Go to start");
-    m_playButton = makeButton("▶", "Play / pause (Space)");
+    QToolButton* startButton = makeButton("start", "Go to start");
+    m_startButton = startButton;
+    m_playButton = makeButton("play", "Play / pause (Space)");
+    m_playButton->setObjectName("play");
+    m_playButton->setIcon(Icons::get("play", QColor(0x07, 0x13, 0x12))); // (dark, on the bright button)
     connect(startButton, &QToolButton::clicked, this, &MainWindow::goToStart);
     connect(m_playButton, &QToolButton::clicked, this, &MainWindow::togglePlay);
 
     m_timeLabel = new QLabel;
-    m_timeLabel->setStyleSheet("font-family: monospace; color: #aaa;");
+    m_timeLabel->setProperty("role", "timecode");
+    m_timeLabel->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Preferred); // (never cut short)
 
     controls->addWidget(startButton);
     controls->addWidget(m_playButton);
@@ -544,7 +683,7 @@ QWidget* MainWindow::buildPreviewPanel()
         setProjectSettings(s);
     });
     auto* shapeLabel = new QLabel("Shape");
-    shapeLabel->setStyleSheet("color: #aaa;");
+    shapeLabel->setProperty("role", "dim");
     controls->addWidget(shapeLabel);
     controls->addWidget(m_shapeBox);
     layout->addLayout(controls);
@@ -635,7 +774,6 @@ QListWidgetItem* MainWindow::addMediaItem(const QString& path, QString* error)
     }
 
     QString name = QFileInfo(path).fileName();
-    QString label = info.duration_sec > 0 ? QString("%1\n%2").arg(name, formatDuration(info.duration_sec)) : name;
 
     QStringList details;
     if (info.has_video)
@@ -648,7 +786,10 @@ QListWidgetItem* MainWindow::addMediaItem(const QString& path, QString* error)
                        .arg(info.sample_rate).arg(info.channels)
                        .arg(info.audio_codec);
 
-    auto* item = new QListWidgetItem(QIcon(QPixmap::fromImage(makeThumbnail(path, info, false))), label);
+    auto* item = new QListWidgetItem(QIcon(QPixmap::fromImage(makeThumbnail(path, info, false))), name);
+    // (shown as badges on its card)
+    item->setData(CardDelegate::DurationRole, info.duration_sec);
+    item->setData(CardDelegate::KindRole, !info.has_video ? "audio" : info.duration_sec > 0 ? "video" : "picture");
     item->setToolTip(name + "\n" + details.join('\n') + "\n\nDrag onto the timeline, or double-click to add it to the end");
     item->setData(MediaBin::PathRole, path);
     item->setData(MediaBin::DurationRole, info.duration_sec);
@@ -732,7 +873,7 @@ void MainWindow::editProjectSettings()
         if (std::abs(fps->itemData(i).toDouble() - m_settings.fps) < 0.01)
             fps->setCurrentIndex(i);
     auto* result = new QLabel;
-    result->setStyleSheet("color: #808286;");
+    result->setProperty("role", "dim");
 
     auto chosen = [=, this] {
         ProjectSettings s = m_settings;
@@ -759,7 +900,7 @@ void MainWindow::editProjectSettings()
     auto* note = new QLabel("Clips that are a different shape get black bars. To fill the frame instead, "
                             "select a clip and tick \"Fill the frame\" under Crop & rotate.");
     note->setWordWrap(true);
-    note->setStyleSheet("color: #808286; font-size: 11px;");
+    note->setProperty("role", "hint");
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel | QDialogButtonBox::Help);
     connect(buttons, &QDialogButtonBox::helpRequested, [] { HelpWindow::open("settings.md"); });
     connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
@@ -769,6 +910,7 @@ void MainWindow::editProjectSettings()
     layout->addWidget(note);
     layout->addWidget(buttons);
     dialog.setMinimumWidth(420);
+    Theme::fit(dialog);
     if (dialog.exec() == QDialog::Accepted)
         setProjectSettings(chosen());
 }
@@ -840,12 +982,107 @@ bool MainWindow::maybeSave()
     return answer == QMessageBox::Discard;
 }
 
+void MainWindow::refreshIcons()
+{
+    for (const auto& [action, icon] : m_actionIcons)
+        action->setIcon(Icons::get(icon));
+    if (m_startButton)
+        m_startButton->setIcon(Icons::get("start"));
+}
+
+void MainWindow::changeEvent(QEvent* event)
+{
+    QMainWindow::changeEvent(event);
+    if (event->type() == QEvent::PaletteChange)
+        refreshIcons(); // the theme changed: icons in its colours
+    else if (event->type() == QEvent::WindowStateChange && m_fullScreen)
+        m_fullScreen->setChecked(isFullScreen()); // (in case it left full screen some other way)
+}
+
 void MainWindow::closeEvent(QCloseEvent* event)
 {
-    if (maybeSave())
+    if (maybeSave()) {
+        saveLayout();
         event->accept();
-    else
+    } else {
         event->ignore();
+    }
+}
+
+// ---- Fitting the window ----
+
+void MainWindow::restoreLayout()
+{
+    QSettings s;
+    if (restoreGeometry(s.value("window/geometry").toByteArray())) {
+        m_top->restoreState(s.value("window/panels").toByteArray());
+        m_main->restoreState(s.value("window/timeline").toByteArray());
+        m_showLibrary->setChecked(s.value("window/library", true).toBool());
+        m_showProperties->setChecked(s.value("window/properties", true).toBool());
+        m_library->setVisible(m_showLibrary->isChecked());
+        m_inspector->setVisible(m_showProperties->isChecked());
+        return;
+    }
+    // First time: a good size for this screen. Small screens get the whole thing.
+    const QRect screen = this->screen() ? this->screen()->availableGeometry() : QRect(0, 0, 1600, 900);
+    if (screen.width() < 1500 || screen.height() < 900) {
+        setWindowState(windowState() | Qt::WindowMaximized);
+        resize(screen.size());
+    } else {
+        QSize size(std::min(1600, int(screen.width() * 0.85)), std::min(980, int(screen.height() * 0.85)));
+        resize(size);
+        move(screen.center() - QPoint(size.width() / 2, size.height() / 2));
+    }
+}
+
+void MainWindow::saveLayout()
+{
+    QSettings s;
+    s.setValue("window/geometry", saveGeometry());
+    s.setValue("window/panels", m_top->saveState());
+    s.setValue("window/timeline", m_main->saveState());
+    s.setValue("window/library", m_showLibrary->isChecked());
+    s.setValue("window/properties", m_showProperties->isChecked());
+}
+
+void MainWindow::resetLayout()
+{
+    for (QAction* a : { m_showLibrary, m_showProperties })
+        a->setChecked(true);
+    m_focusPreview->setChecked(false);
+    m_library->show();
+    m_inspector->show();
+    // Back to the usual shares: library 2, preview 4, properties 2; picture 3, timeline 2
+    const int w = m_top->width(), h = m_main->height();
+    m_top->setSizes({ w * 2 / 8, w * 4 / 8, w * 2 / 8 });
+    m_main->setSizes({ h * 3 / 5, h * 2 / 5 });
+}
+
+void MainWindow::resizeEvent(QResizeEvent* event)
+{
+    QMainWindow::resizeEvent(event);
+    adaptToSize();
+}
+
+void MainWindow::adaptToSize()
+{
+    if (!m_toolbar)
+        return;
+    // Narrow window: toolbar buttons lose their words (hover still says what they are)...
+    if (m_toolbarTextWidth == 0 && !m_iconsOnly)
+        m_toolbarTextWidth = m_toolbar->sizeHint().width();
+    const bool iconsOnly = m_toolbarTextWidth > 0 && width() < m_toolbarTextWidth + 16;
+    if (iconsOnly != m_iconsOnly) {
+        m_iconsOnly = iconsOnly;
+        for (const auto& [action, icon] : m_actionIcons)
+            if (auto* b = qobject_cast<QToolButton*>(m_toolbar->widgetForAction(action)))
+                if (!icon.startsWith("zoom") && icon != "fit")
+                    b->setToolButtonStyle(iconsOnly ? Qt::ToolButtonIconOnly : Qt::ToolButtonTextBesideIcon);
+    }
+    // ...and the side panels slim down a bit
+    const bool tiny = width() < 1000, compact = width() < 1280;
+    m_inspector->setMinimumWidth(tiny ? 230 : compact ? 290 : 350);
+    m_library->setMinimumWidth(tiny ? 150 : compact ? 190 : 220);
 }
 
 void MainWindow::newProject()
@@ -907,6 +1144,7 @@ bool MainWindow::loadProject(const QString& path)
         QMessageBox::warning(this, "Some files are missing",
                              "These files couldn't be found, so their clips will show up black:\n\n" + missing.join('\n'));
     statusBar()->showMessage("Opened " + QFileInfo(path).fileName(), 5000);
+    rememberRecent(path);
     return true;
 }
 
@@ -935,6 +1173,7 @@ bool MainWindow::saveProject()
     setDirty(false);
     clearAutoSave();
     statusBar()->showMessage("Saved " + QFileInfo(m_projectPath).fileName(), 4000);
+    rememberRecent(m_projectPath);
     return true;
 }
 
@@ -971,7 +1210,8 @@ void MainWindow::requestPreview()
 
 void MainWindow::updateTimeLabel()
 {
-    m_timeLabel->setText(formatClock(m_timeline->playhead()) + "  /  " + formatClock(m_timeline->duration()));
+    const bool hours = m_timeline->duration() >= 3600;
+    m_timeLabel->setText(formatClock(m_timeline->playhead(), hours) + "  /  " + formatClock(m_timeline->duration(), hours));
 }
 
 void MainWindow::onPlayheadMoved(double sec)
@@ -1048,7 +1288,7 @@ void MainWindow::startPlayback()
     m_audio->play(from);
     m_playTimer->start();
     m_playing = true;
-    m_playButton->setText("⏸");
+    m_playButton->setIcon(Icons::get("pause", QColor(0x07, 0x13, 0x12)));
 }
 
 void MainWindow::stopPlayback()
@@ -1058,7 +1298,7 @@ void MainWindow::stopPlayback()
     m_playTimer->stop();
     m_audio->stop();
     m_playing = false;
-    m_playButton->setText("▶");
+    m_playButton->setIcon(Icons::get("play", QColor(0x07, 0x13, 0x12)));
 }
 
 void MainWindow::onTick()
@@ -1451,7 +1691,8 @@ void MainWindow::runDemo(const QStringList& paths, const QString& screenshotPath
         if (qEnvironmentVariableIsSet("MIXMEDIA_DEMO_STILL")) {
             // Stay put (mid-transition) and show the Transitions tab instead of playing
             if (auto* tabs = findChild<QTabWidget*>())
-                tabs->setCurrentIndex(qEnvironmentVariableIsSet("MIXMEDIA_DEMO_SUBS") ? tabs->count() - 1 : 2); // Subtitles / Effects
+                tabs->setCurrentIndex(qEnvironmentVariableIsSet("MIXMEDIA_DEMO_TAB") ? qEnvironmentVariableIntValue("MIXMEDIA_DEMO_TAB")
+                                      : qEnvironmentVariableIsSet("MIXMEDIA_DEMO_SUBS") ? tabs->count() - 1 : 2); // (MIXMEDIA_DEMO_TAB=n picks one)
             m_timeline->zoomBy(60); // close up around the playhead
             return;
         }

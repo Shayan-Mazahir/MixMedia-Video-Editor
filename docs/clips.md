@@ -17,7 +17,7 @@ Pick a **Look** (black & white, vintage, vivid...), and fine-tune brightness, co
 
 ## Position & size
 
-Make a clip smaller and move it around for **picture-in-picture**: put one clip on Video 2 above another on Video 1, and shrink it. **Opacity** makes it see-through. These can all change over time with [keyframes](keyframes.md).
+Make a clip smaller and move it around for **picture-in-picture**: put one clip on Video 2 above another on Video 1, and shrink it. **Quick spot** puts it straight into a corner, a half of the screen, or a cell of a 2×2 grid. **Opacity** makes it see-through. These can all change over time with [keyframes](keyframes.md).
 
 ## Crop & rotate
 

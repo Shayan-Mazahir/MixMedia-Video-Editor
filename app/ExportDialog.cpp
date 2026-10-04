@@ -102,7 +102,7 @@ ExportDialog::ExportDialog(QSize projectSize, double projectFps, const QString& 
     }
     m_shapeNote = new QLabel("A different shape from your project, so you'll get black bars around the picture.");
     m_shapeNote->setWordWrap(true);
-    m_shapeNote->setStyleSheet("color: #808286; font-size: 11px;");
+    m_shapeNote->setProperty("role", "hint");
     auto* resolutionBox = new QVBoxLayout;
     resolutionBox->addWidget(m_resolution);
     resolutionBox->addWidget(m_shapeNote);
@@ -130,7 +130,7 @@ ExportDialog::ExportDialog(QSize projectSize, double projectFps, const QString& 
     modes->addButton(m_normal);
     m_copyNote = new QLabel;
     m_copyNote->setWordWrap(true);
-    m_copyNote->setStyleSheet("color: #808286; font-size: 11px;");
+    m_copyNote->setProperty("role", "hint");
     if (canCopy) {
         m_copyNote->setText("Instant takes seconds. Cuts snap to the nearest keyframe, so a piece may start a moment early.");
     } else {

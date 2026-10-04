@@ -4,6 +4,7 @@
 #include "AutoCaptions.h"
 #include "AppSettings.h"
 #include "HelpWindow.h"
+#include "Theme.h"
 
 #include <ve/engine.h>
 
@@ -206,7 +207,7 @@ QList<TimelineClip> run(QWidget* parent, const QList<RenderClip>& clips, bool ha
                             "It all happens on this computer. Have a read through the result in the Subtitles tab, "
                             "it's good but not perfect.");
     note->setWordWrap(true);
-    note->setStyleSheet("color: #808286; font-size: 11px;");
+    note->setProperty("role", "hint");
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel | QDialogButtonBox::Help);
     buttons->button(QDialogButtonBox::Ok)->setText("Start");
     QObject::connect(buttons, &QDialogButtonBox::helpRequested, [] { HelpWindow::open("subtitles.md"); });
@@ -216,6 +217,7 @@ QList<TimelineClip> run(QWidget* parent, const QList<RenderClip>& clips, bool ha
     layout->addLayout(form);
     layout->addWidget(note);
     layout->addWidget(buttons);
+    Theme::fit(dialog);
     if (dialog.exec() != QDialog::Accepted)
         return {};
     remembered.setValue("captions/language", language->currentData());
@@ -293,7 +295,9 @@ QList<TimelineClip> run(QWidget* parent, const QList<RenderClip>& clips, bool ha
     });
     QEventLoop loop;
     QObject::connect(worker, &QThread::finished, &loop, &QEventLoop::quit);
-    worker->start();
+    // Full speed when nothing else is going on, but everything else gets the CPU first
+    // (on Linux, "idle" is the setting that really does that, and whisper's own threads inherit it)
+    worker->start(QThread::IdlePriority);
     poll.start(200);
     loop.exec();
     poll.stop();

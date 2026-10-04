@@ -8,8 +8,9 @@
 class NumberSlider;
 class QCheckBox;
 class QLabel;
+class QRadioButton;
 
-// Edit → Settings. For now: how much of the computer MixMedia may use.
+// Edit → Settings: how much of the computer MixMedia may use, and update checks.
 class SettingsDialog : public QDialog {
     Q_OBJECT
 
@@ -26,4 +27,10 @@ private:
     QLabel* m_threadsNote;
     QCheckBox* m_gpuExport;
     QCheckBox* m_gpuCaptions;
+    QRadioButton* m_updatesReleases;
+    QRadioButton* m_updatesPre;
+    QRadioButton* m_updatesOff;
+    QRadioButton* m_themeDark;
+    QRadioButton* m_themeLight;
+    QRadioButton* m_themeSystem;
 };
