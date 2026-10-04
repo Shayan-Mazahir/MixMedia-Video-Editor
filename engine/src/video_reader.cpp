@@ -117,10 +117,59 @@ bool VideoReader::decodeNext()
     }
 }
 
+void VideoReader::setBackwards(bool backwards)
+{
+    if (backwards == m_backwards)
+        return;
+    m_backwards = backwards;
+    m_window.clear();
+}
+
+const AVFrame* VideoReader::backwardsFrameAt(double sec)
+{
+    // Already got it? (the newest frame that starts at or before `sec`)
+    auto lookup = [&]() -> const AVFrame* {
+        if (m_window.empty() || sec < frameStart(m_window.front().get()) - 1e-6
+            || sec >= frameEnd(m_window.back().get()) + 1e-6)
+            return nullptr;
+        for (auto it = m_window.rbegin(); it != m_window.rend(); ++it)
+            if (frameStart(it->get()) <= sec + 1e-6)
+                return it->get();
+        return m_window.front().get();
+    };
+    if (const AVFrame* f = lookup())
+        return f;
+
+    // Grab the second leading up to it, and keep every frame
+    constexpr double Window = 1.0;
+    m_window.clear();
+    const double from = std::max(0.0, sec - Window);
+    seekTo(from);
+    while (decodeNext()) {
+        const AVFrame* f = m_frame.get();
+        if (frameEnd(f) <= from + 1e-6)
+            continue; // still before the window
+        // Card frames come back to normal memory (the card only has a few slots to hold frames in)
+        const AVFrame* mem = toMemory(f);
+        if (!mem)
+            break;
+        FramePtr copy(av_frame_alloc());
+        if (av_frame_ref(copy.get(), mem) < 0)
+            break;
+        m_window.push_back(std::move(copy));
+        if (frameEnd(f) > sec + 1e-6)
+            break;
+    }
+    m_haveFrame = false; // (the decoder's moved on, so don't trust m_frame for forwards reading)
+    return lookup() ? lookup() : (m_window.empty() ? nullptr : m_window.back().get());
+}
+
 const AVFrame* VideoReader::frameAt(double sec, bool fast)
 {
     if (!isOpen())
         return nullptr;
+    if (m_backwards && !fast && !m_still)
+        return backwardsFrameAt(sec);
 
     if (m_haveFrame) {
         double start = frameStart(m_frame.get());
@@ -192,11 +241,29 @@ const AVFrame* VideoReader::toMemory(const AVFrame* f)
     return m_inMemory.get();
 }
 
-bool VideoReader::scale(const AVFrame* f, int w, int h, uint8_t* dst, int dstStride, bool bgra)
+bool VideoReader::scale(const AVFrame* f, int w, int h, uint8_t* dst, int dstStride, bool bgra, const FrameCrop& crop)
 {
     f = toMemory(f);
     if (!f)
         return false;
+    if (crop.any()) {
+        // A second look at the same pixels with the edges trimmed off (nothing gets copied)
+        if (!m_cropped)
+            m_cropped.reset(av_frame_alloc());
+        av_frame_unref(m_cropped.get());
+        if (av_frame_ref(m_cropped.get(), f) < 0)
+            return false;
+        auto px = [](float part, int size) { return size_t(std::clamp(part, 0.0f, 0.95f) * size) & ~size_t(1); };
+        m_cropped->crop_left = px(crop.left, f->width);
+        m_cropped->crop_right = px(crop.right, f->width);
+        m_cropped->crop_top = px(crop.top, f->height);
+        m_cropped->crop_bottom = px(crop.bottom, f->height);
+        if (int(m_cropped->crop_left + m_cropped->crop_right) > f->width - 2
+            || int(m_cropped->crop_top + m_cropped->crop_bottom) > f->height - 2
+            || av_frame_apply_cropping(m_cropped.get(), AV_FRAME_CROP_UNALIGNED) < 0)
+            return false;
+        f = m_cropped.get();
+    }
     SwsContext* sws = converterFor(m_sws, m_swsKey, f, w, h, bgra ? AV_PIX_FMT_BGRA : AV_PIX_FMT_RGBA, m_fastScaling);
     if (!sws)
         return false;

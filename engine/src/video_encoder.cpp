@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shayan Mazahir. Part of MixMedia Video Editor, see NOTICE.
 
 #include "video_encoder.h"
+#include "effects.h" // (threadLimit)
 
 extern "C" {
 #include <libavutil/hwcontext.h>
@@ -147,6 +148,7 @@ bool VideoEncoder::tryOpen(const Candidate& c, int w, int h, AVRational frameRat
         ctx->gop_size = int(av_q2d(frameRate) * 4); // a keyframe every few seconds keeps seeking snappy
         if (globalHeader)
             ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+        ctx->thread_count = threadLimit(); // 0 = one per core
         if (m_upload)
             ctx->hw_frames_ctx = av_buffer_ref(m_frames);
 

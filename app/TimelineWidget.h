@@ -33,7 +33,20 @@ public:
     void setClips(const QList<TimelineClip>& clips, const QList<TimelineTrack>& tracks = {});
 
     // What the engine needs. titleImage turns a title into the picture file to show.
-    QList<RenderClip> renderClips(const std::function<QString(const TimelineClip&)>& titleImage = {}) const;
+    // titleImage turns a title look into a picture file (highlighting one word, or -1 for none).
+    // subtitles = false leaves the subtitles out (when they're exported some other way).
+    using TitleImage = std::function<QString(const TitleStyle& style, int highlightWord)>;
+    QList<RenderClip> renderClips(const TitleImage& titleImage = {}, bool subtitles = true) const;
+
+    // ---- Subtitles ----
+    int subtitleTrack() const;      // the first subtitle track, -1 if there isn't one
+    int ensureSubtitleTrack();      // ...making one on top if there isn't (no undo step of its own)
+    QList<int> subtitleLines() const; // the lines on the first subtitle track, in time order
+    TitleStyle subtitleLook(const TimelineClip& line) const; // how a line looks (its own, or its track's)
+    // Puts lines on the subtitle track as one undo step (replace = clear what's there first)
+    void addSubtitles(const QList<TimelineClip>& lines, bool replace);
+    // When each word of a line is said: its own timings, or spread over the line by length
+    static QList<WordTime> wordTimes(const TimelineClip& line);
     double duration() const;
 
     double playhead() const { return m_playhead; }
@@ -49,13 +62,18 @@ public:
     // Where clips start and end, for jumping between cuts
     QList<double> cutPoints() const;
 
-    int selectedIndex() const { return m_selected; }
+    int selectedIndex() const { return m_selected; } // the one the properties panel shows
+    QList<int> selectedIndexes() const { return m_selection; } // everything selected
     void selectClip(int index);
+    void toggleSelected(int index); // Ctrl+click
+    bool canPaste() const { return !m_clipboard.isEmpty(); }
     // Swap in a changed version of a clip (from the properties panel). Edits with the same
     // `what` in quick succession (dragging a slider) become a single undo step.
     void updateClip(int index, const TimelineClip& clip, const QString& what);
     // Changes how fast a clip plays, and slides everything after it along to make room
     void setClipSpeed(int index, double speed);
+    // Plays a clip (and its detached sound) backwards, or forwards again
+    void setReverse(int index, bool backwards);
     // Puts a transition on the cut where this clip starts
     void setTransition(int index, int type);
     bool hasClipBefore(int index) const; // does another clip end right where this one starts?
@@ -71,6 +89,12 @@ public slots:
     void splitAtPlayhead();
     void deleteSelected(bool closeGap = true); // closing the gap = "ripple delete"
     void deleteSelectedKeepGap();
+    void selectAll();
+    // Holds the frame under the playhead for a couple of seconds, pushing the rest along
+    void freezeFrame(double seconds = 2.0);
+    void copySelected();
+    void cutSelected();
+    void paste(); // at the playhead
     void undo();
     void redo();
     void zoomToFit();
@@ -99,7 +123,7 @@ protected:
     void contextMenuEvent(QContextMenuEvent* event) override;
 
 private:
-    enum class Drag { None, Playhead, Move, TrimLeft, TrimRight };
+    enum class Drag { None, Playhead, Move, TrimLeft, TrimRight, Box };
     enum class Edge { None, Left, Right };
 
     // Undo keeps the tracks too, since adding one shifts every clip below it
@@ -150,6 +174,12 @@ private:
     void dragTrim(const QPoint& pos, bool left);
     void pushUndo(const QList<TimelineClip>& state);
     QList<int> partnersOf(int index) const; // itself + its detached sound (or the video it came from)
+    QList<int> withPartners(const QList<int>& clips) const;
+    QList<int> splitAt(const QList<int>& targets, double at); // returns the new right-hand pieces
+    QList<int> deleteOne(int index, bool closeGap); // returns every index it removed
+    void settleGroup(const QList<int>& group);   // slide a group right until it's not on top of anything
+    void followTransitions();
+    void dragGroup(const QPoint& pos);
     void syncPartners();
     void changed();
     void invalidate(); // something changed, redraw the timeline properly next time
@@ -167,12 +197,19 @@ private:
     void drawFilmstrip(QPainter& p, const TimelineClip& clip, const QRectF& r);
     void drawWaveform(QPainter& p, const TimelineClip& clip, const QRectF& r);
     void drawFades(QPainter& p, const TimelineClip& clip, const QRectF& r);
+    void drawKeyframes(QPainter& p, const TimelineClip& clip, const QRectF& r);
     void drawPlayhead(QPainter& p);
 
     QList<TimelineTrack> m_tracks = defaultTracks();
     QList<TimelineClip> m_clips;
     QList<TimelineClip> m_ghosts; // where a drop would land
     int m_selected = -1;
+    QList<int> m_selection;           // everything selected (m_selected is one of them)
+    QList<TimelineClip> m_clipboard;  // copied clips, starts measured from the first one
+    QList<int> m_group;               // what's moving together while dragging several clips
+    QList<QPair<int, int>> m_followers; // transition blocks sticking to a moving clip: (block, clip)
+    QPoint m_boxFrom, m_boxTo;        // dragging out a selection box
+    bool m_boxing = false;
 
     QList<Snapshot> m_undo;
     QList<Snapshot> m_redo;

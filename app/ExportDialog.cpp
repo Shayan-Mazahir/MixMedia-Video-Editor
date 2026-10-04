@@ -3,6 +3,9 @@
 
 #include "ExportDialog.h"
 
+#include "AppSettings.h"
+#include "HelpWindow.h"
+
 #include <ve/engine.h>
 
 #include <QButtonGroup>
@@ -40,11 +43,12 @@ QString ExportDialog::extensionFor(int format)
 }
 
 ExportDialog::ExportDialog(QSize projectSize, double projectFps, const QString& suggestedPath,
-                           bool canCopy, const QString& whyNotCopy, QWidget* parent)
+                           bool canCopy, const QString& whyNotCopy, bool hasSubtitles, QWidget* parent)
     : QDialog(parent)
     , m_projectSize(projectSize)
     , m_projectFps(projectFps)
     , m_canCopy(canCopy)
+    , m_hasSubtitles(hasSubtitles)
 {
     setWindowTitle("Export");
     setMinimumWidth(500);
@@ -115,7 +119,7 @@ ExportDialog::ExportDialog(QSize projectSize, double projectFps, const QString& 
     m_quality->addItem("Small file", 26);
 
     m_graphicsCard = new QCheckBox("Use the graphics card (much faster)");
-    m_graphicsCard->setChecked(true);
+    m_graphicsCard->setChecked(AppSettings::gpuForExport());
     m_graphicsCard->setToolTip("Falls back to the CPU automatically if your graphics card can't do it");
 
     // Instant = copy the video as it is. Normal = rebuild every frame (needed for titles, fades, ...)
@@ -149,10 +153,33 @@ ExportDialog::ExportDialog(QSize projectSize, double projectFps, const QString& 
     form->addRow("Quality", m_quality);
     form->addRow("", m_graphicsCard);
 
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    // Subtitles: any mix of the three (remembered for next time)
+    QSettings remembered;
+    m_burnSubs = new QCheckBox("In the picture (always showing)");
+    m_srtSubs = new QCheckBox("As an .srt file next to the video");
+    m_trackSubs = new QCheckBox("As a track viewers can switch on and off");
+    m_burnSubs->setChecked(remembered.value("export/burnSubtitles", true).toBool());
+    m_srtSubs->setChecked(remembered.value("export/srtSubtitles", false).toBool());
+    m_trackSubs->setChecked(remembered.value("export/trackSubtitles", false).toBool());
+    m_trackSubs->setToolTip("Works in most players (VLC, phones, browsers). YouTube wants the .srt file instead.");
+    auto* subs = new QVBoxLayout;
+    for (QCheckBox* b : { m_burnSubs, m_srtSubs, m_trackSubs })
+        subs->addWidget(b);
+    form->addRow("Subtitles", subs);
+    for (QCheckBox* b : { m_burnSubs, m_srtSubs, m_trackSubs })
+        connect(b, &QCheckBox::toggled, this, &ExportDialog::refresh);
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel | QDialogButtonBox::Help);
     buttons->button(QDialogButtonBox::Ok)->setText("Export");
+    connect(buttons, &QDialogButtonBox::helpRequested, [] { HelpWindow::open("export.md"); });
     connect(buttons, &QDialogButtonBox::accepted, this, [this] {
-        QSettings().setValue("export/preset", m_preset->currentText());
+        QSettings s;
+        s.setValue("export/preset", m_preset->currentText());
+        if (m_hasSubtitles) {
+            s.setValue("export/burnSubtitles", m_burnSubs->isChecked());
+            s.setValue("export/srtSubtitles", m_srtSubs->isChecked());
+            s.setValue("export/trackSubtitles", m_trackSubs->isChecked());
+        }
         accept();
     });
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
@@ -238,6 +265,12 @@ void ExportDialog::refresh()
     m_form->setRowVisible(5, picture);          // Frame rate
     m_form->setRowVisible(6, mp4);              // Quality
     m_form->setRowVisible(7, mp4);              // Graphics card
+    m_form->setRowVisible(8, m_hasSubtitles);   // Subtitles
+    m_burnSubs->setVisible(picture);
+    m_trackSubs->setVisible(mp4);
+    // Subtitles in the picture (or as a track) mean redrawing every frame, so no instant copy
+    if (m_hasSubtitles && mp4 && (m_burnSubs->isChecked() || m_trackSubs->isChecked()) && m_instant->isChecked())
+        m_normal->setChecked(true);
     m_resolution->setEnabled(reencode);
     m_frameRate->setEnabled(reencode);
     m_quality->setEnabled(reencode);
@@ -305,6 +338,21 @@ int ExportDialog::crf() const
 bool ExportDialog::instant() const
 {
     return format() == VE_FORMAT_MP4 && m_instant->isChecked();
+}
+
+bool ExportDialog::burnSubtitles() const
+{
+    return m_hasSubtitles && format() != VE_FORMAT_MP3 && format() != VE_FORMAT_M4A && m_burnSubs->isChecked();
+}
+
+bool ExportDialog::subtitleFile() const
+{
+    return m_hasSubtitles && m_srtSubs->isChecked();
+}
+
+bool ExportDialog::subtitleTrack() const
+{
+    return m_hasSubtitles && format() == VE_FORMAT_MP4 && m_trackSubs->isChecked();
 }
 
 bool ExportDialog::useGraphicsCard() const

@@ -6,6 +6,7 @@
 #include "timeline.h"
 
 #include <string>
+#include <vector>
 
 namespace ve {
 
@@ -19,6 +20,13 @@ struct ExportSettings {
     double fps = 30.0;
     int crf = 20;          // quality: lower = better looking + bigger file
     bool hardware = true;  // try the graphics card first
+
+    struct Subtitle {
+        double start, end;
+        std::string text;
+    };
+    std::vector<Subtitle> subtitles; // added as a track that can be switched on and off
+    std::string subtitleLanguage = "und";
 };
 
 // Return non-zero from the callback to cancel.

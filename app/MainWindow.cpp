@@ -3,7 +3,13 @@
 
 #include "MainWindow.h"
 #include "AudioPlayer.h"
+#include "AppSettings.h"
+#include "AutoCaptions.h"
 #include "ExportDialog.h"
+#include "HelpWindow.h"
+#include "SettingsDialog.h"
+#include "SubtitleFile.h"
+#include "SubtitlePanel.h"
 #include "MediaBin.h"
 #include "PreviewRenderer.h"
 #include "PreviewWidget.h"
@@ -21,7 +27,11 @@
 #include <QCloseEvent>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QComboBox>
 #include <QDateTime>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QFormLayout>
 #include <QListWidgetItem>
 #include <QLockFile>
 #include <QUuid>
@@ -58,6 +68,7 @@
 #include <QVBoxLayout>
 
 #include <atomic>
+#include <tuple>
 #include <memory>
 #include <vector>
 
@@ -160,6 +171,8 @@ MainWindow::MainWindow(QWidget* parent)
         library->addTab(panel, tab.name);
         connect(panel, &LibraryPanel::addAtPlayhead, m_timeline, &TimelineWidget::addAtPlayhead);
     }
+    m_subtitles = new SubtitlePanel(m_timeline);
+    library->addTab(m_subtitles, "Subtitles");
     top->addWidget(library);
     top->addWidget(buildPreviewPanel());
     top->addWidget(m_inspector);
@@ -181,6 +194,24 @@ MainWindow::MainWindow(QWidget* parent)
     connect(m_inspector, &ClipInspector::edited, m_timeline, &TimelineWidget::updateClip);
     connect(m_inspector, &ClipInspector::speedChanged, m_timeline, &TimelineWidget::setClipSpeed);
     connect(m_inspector, &ClipInspector::detachAudioClicked, m_timeline, &TimelineWidget::detachAudio);
+    connect(m_inspector, &ClipInspector::seekRequested, this, &MainWindow::seekTo);
+    connect(m_subtitles, &SubtitlePanel::seekRequested, this, &MainWindow::seekTo);
+    connect(m_subtitles, &SubtitlePanel::importClicked, this, &MainWindow::importSubtitles);
+    connect(m_subtitles, &SubtitlePanel::exportClicked, this, &MainWindow::exportSubtitles);
+    connect(m_subtitles, &SubtitlePanel::autoCaptionsClicked, this, &MainWindow::autoCaptions);
+    connect(m_inspector, &ClipInspector::pickSpotRequested, this, [this] {
+        stopPlayback();
+        m_preview->pickSpot();
+    });
+    connect(m_preview, &PreviewWidget::picked, m_inspector, &ClipInspector::setSpot);
+    connect(m_inspector, &ClipInspector::pickColorRequested, this, [this] {
+        stopPlayback();
+        m_preview->pickColor();
+    });
+    connect(m_preview, &PreviewWidget::colorPicked, m_inspector, &ClipInspector::setKeyColor);
+    connect(m_inspector, &ClipInspector::reverseChanged, m_timeline, &TimelineWidget::setReverse);
+    connect(m_inspector, &ClipInspector::evenOutVolumeClicked, this, &MainWindow::evenOutVolume);
+    connect(m_inspector, &ClipInspector::freezeFrameClicked, m_timeline, [this] { m_timeline->freezeFrame(); });
     connect(m_timeline, &TimelineWidget::filesDropped, this, &MainWindow::onFilesDroppedOnTimeline);
     setAcceptDrops(true); // drag files in from the file manager
     connect(m_timeline, &TimelineWidget::playheadMoved, this, &MainWindow::onPlayheadMoved);
@@ -314,9 +345,21 @@ void MainWindow::buildActions()
     QAction* import = make("&Import media…", { QKeySequence("Ctrl+I") }, "Import media", &MainWindow::importMedia);
     QAction* exportAction = make("&Export…", { QKeySequence("Ctrl+E") }, "Export to MP4", &MainWindow::exportVideo);
     QAction* quit = make("&Quit", { QKeySequence::Quit }, "Quit", &QWidget::close);
+    QAction* importSubs = make("Import s&ubtitles (.srt, .vtt)…", {}, "Bring in a subtitle file", &MainWindow::importSubtitles);
+    QAction* exportSubs = make("Export subtitles (.s&rt)…", {}, "Save the subtitles as an .srt file", &MainWindow::exportSubtitles);
+    QAction* settings = make("Project se&ttings…", {}, "The finished video's shape, size and frame rate", &MainWindow::editProjectSettings);
 
     QAction* undo = make("&Undo", { QKeySequence::Undo }, "Undo", [this] { m_timeline->undo(); });
     QAction* redo = make("&Redo", { QKeySequence("Ctrl+Shift+Z"), QKeySequence("Ctrl+Y") }, "Redo", [this] { m_timeline->redo(); });
+    QAction* copy = make("&Copy", { QKeySequence::Copy }, "Copy the selected clips", [this] { m_timeline->copySelected(); });
+    QAction* cut = make("Cu&t", { QKeySequence::Cut }, "Cut the selected clips", [this] { m_timeline->cutSelected(); });
+    QAction* paste = make("&Paste", { QKeySequence::Paste }, "Paste at the playhead", [this] { m_timeline->paste(); });
+    QAction* settingsWindow = make("Se&ttings…", { QKeySequence::Preferences }, "How much of the computer MixMedia may use",
+                                   [this] { SettingsDialog(this).exec(); });
+    QAction* selectAll = make("Select &all", { QKeySequence::SelectAll }, "Select every clip", [this] { m_timeline->selectAll(); });
+    QAction* captions = make("Auto-&captions…", {}, "Listen to the video and write the subtitles", &MainWindow::autoCaptions);
+    QAction* freeze = make("&Freeze frame", { QKeySequence("Ctrl+Shift+F") }, "Hold the frame under the playhead for 2 seconds",
+                           [this] { m_timeline->freezeFrame(); });
     QAction* split = make("S&plit", { QKeySequence("S"), QKeySequence("Ctrl+B") }, "Split at the playhead", [this] { m_timeline->splitAtPlayhead(); });
     QAction* del = make("&Delete", {}, "Delete the selected clip and close the gap (Delete key)", [this] { m_timeline->deleteSelected(); });
     QAction* delGap = make("Delete, &leaving a gap", {}, "Delete the selected clip but leave the space empty (Shift+Delete)", [this] { m_timeline->deleteSelectedKeepGap(); });
@@ -331,12 +374,18 @@ void MainWindow::buildActions()
     file->addActions({ newProject, open, save, saveAs });
     file->addSeparator();
     file->addActions({ import, exportAction });
+    file->addActions({ importSubs, exportSubs });
+    file->addAction(settings);
     file->addSeparator();
     file->addAction(quit);
     QMenu* edit = menuBar()->addMenu("&Edit");
     edit->addActions({ undo, redo });
     edit->addSeparator();
-    edit->addActions({ split, del, delGap, detach, title });
+    edit->addActions({ cut, copy, paste, selectAll });
+    edit->addSeparator();
+    edit->addActions({ split, del, delGap, detach, freeze, title, captions });
+    edit->addSeparator();
+    edit->addAction(settingsWindow);
     QMenu* view = menuBar()->addMenu("&View");
     view->addActions({ zoomIn, zoomOut, fit });
     // Getting around. These work from anywhere in the window.
@@ -354,6 +403,11 @@ void MainWindow::buildActions()
     playback->addAction(make("Go to end", { QKeySequence(Qt::Key_End) }, "Go to the end", [this] { seekTo(m_timeline->duration()); }));
 
     QMenu* help = menuBar()->addMenu("&Help");
+    QAction* helpPages = make("MixMedia &help", { QKeySequence::HelpContents }, "How everything works",
+                              [] { HelpWindow::open(); });
+    help->addAction(helpPages);
+    help->addAction(make("&Keyboard shortcuts", {}, "Every shortcut in one place", [] { HelpWindow::open("shortcuts.md"); }));
+    help->addSeparator();
     help->addAction(make("&About MixMedia", {}, "Who made this, and the licence", &MainWindow::showAbout));
     help->addAction(make("About &Qt", {}, "About the Qt toolkit", [] { QApplication::aboutQt(); }));
 
@@ -382,6 +436,14 @@ void MainWindow::buildActions()
     if (auto* button = qobject_cast<QToolButton*>(bar->widgetForAction(exportAction)))
         button->setStyleSheet("QToolButton { background: #2fc6b4; color: black; font-weight: bold;"
                               " padding: 4px 14px; border-radius: 4px; }");
+    // The way into the help, always in the corner
+    auto* helpCorner = new QWidget;
+    auto* helpLayout = new QHBoxLayout(helpCorner);
+    helpLayout->setContentsMargins(8, 0, 4, 0);
+    QToolButton* helpButton = HelpWindow::button("README.md");
+    helpButton->setToolTip("Help (F1)");
+    helpLayout->addWidget(helpButton);
+    bar->addWidget(helpCorner);
 
 }
 
@@ -467,6 +529,24 @@ QWidget* MainWindow::buildPreviewPanel()
     controls->addSpacing(8);
     controls->addWidget(m_timeLabel);
     controls->addStretch();
+
+    // The finished video's shape, right where you can see what it does
+    m_shapeBox = new QComboBox;
+    m_shapeBox->setFocusPolicy(Qt::NoFocus);
+    m_shapeBox->setToolTip("The shape of the finished video. File → Project settings for its size and frame rate.");
+    for (const ProjectSettings::Shape& s : ProjectSettings::shapes()) {
+        m_shapeBox->addItem(s.shortName, s.id);
+        m_shapeBox->setItemData(m_shapeBox->count() - 1, s.name, Qt::ToolTipRole);
+    }
+    connect(m_shapeBox, &QComboBox::activated, this, [this] {
+        ProjectSettings s = m_settings;
+        s.shape = m_shapeBox->currentData().toString();
+        setProjectSettings(s);
+    });
+    auto* shapeLabel = new QLabel("Shape");
+    shapeLabel->setStyleSheet("color: #aaa;");
+    controls->addWidget(shapeLabel);
+    controls->addWidget(m_shapeBox);
     layout->addLayout(controls);
 
     return panel;
@@ -599,9 +679,9 @@ QListWidgetItem* MainWindow::addMediaItem(const QString& path, QString* error)
 
 // ---- Timeline & preview ----
 
-MainWindow::Project MainWindow::project() const
+MainWindow::Project MainWindow::project(const ProjectSettings& settings) const
 {
-    // The project takes its size from the first video clip on the timeline
+    // Starts from the first video clip on the timeline, then the project settings get their say
     Project p;
     double earliest = -1;
     for (const TimelineClip& c : m_timeline->clips()) {
@@ -614,15 +694,91 @@ MainWindow::Project MainWindow::project() const
             p.fps = c.fps > 0 ? c.fps : 30.0;
         }
     }
+    QSize size = settings.sizeFor(QSize(p.width, p.height));
+    p.width = size.width();
+    p.height = size.height();
+    if (settings.fps > 0)
+        p.fps = settings.fps;
     return p;
 }
 
-QList<RenderClip> MainWindow::renderClips(QSize titleSize) const
+void MainWindow::setProjectSettings(const ProjectSettings& settings)
+{
+    bool changed = !(settings == m_settings);
+    m_settings = settings;
+    int i = m_shapeBox->findData(settings.shape);
+    m_shapeBox->setCurrentIndex(i >= 0 ? i : 0);
+    if (changed)
+        onClipsChanged(); // new shape: redo the preview (and it counts as an unsaved change)
+}
+
+void MainWindow::editProjectSettings()
+{
+    QDialog dialog(this);
+    dialog.setWindowTitle("Project settings");
+    auto* shape = new QComboBox;
+    for (const ProjectSettings::Shape& s : ProjectSettings::shapes())
+        shape->addItem(s.name, s.id);
+    shape->setCurrentIndex(std::max(0, shape->findData(m_settings.shape)));
+    auto* resolution = new QComboBox;
+    for (int r : ProjectSettings::resolutions())
+        resolution->addItem(r == 2160 ? QStringLiteral("4K (2160)") : QString("%1p").arg(r), r);
+    resolution->setCurrentIndex(std::max(0, resolution->findData(m_settings.resolution)));
+    auto* fps = new QComboBox;
+    fps->addItem("Match the first video", 0.0);
+    for (double f : { 24.0, 25.0, 30.0, 50.0, 60.0 })
+        fps->addItem(QString("%1 fps").arg(f), f);
+    for (int i = 0; i < fps->count(); ++i)
+        if (std::abs(fps->itemData(i).toDouble() - m_settings.fps) < 0.01)
+            fps->setCurrentIndex(i);
+    auto* result = new QLabel;
+    result->setStyleSheet("color: #808286;");
+
+    auto chosen = [=, this] {
+        ProjectSettings s = m_settings;
+        s.shape = shape->currentData().toString();
+        s.resolution = resolution->currentData().toInt();
+        s.fps = fps->currentData().toDouble();
+        return s;
+    };
+    auto refresh = [=, this] {
+        bool automatic = shape->currentData().toString() == "auto";
+        resolution->setEnabled(!automatic);
+        Project p = project(chosen());
+        result->setText(QString("%1 × %2 at %3 fps").arg(p.width).arg(p.height).arg(p.fps, 0, 'g', 4));
+    };
+    for (QComboBox* box : { shape, resolution, fps })
+        connect(box, &QComboBox::currentIndexChanged, &dialog, refresh);
+    refresh();
+
+    auto* form = new QFormLayout;
+    form->addRow("Shape", shape);
+    form->addRow("Size", resolution);
+    form->addRow("Frame rate", fps);
+    form->addRow("Comes out at", result);
+    auto* note = new QLabel("Clips that are a different shape get black bars. To fill the frame instead, "
+                            "select a clip and tick \"Fill the frame\" under Crop & rotate.");
+    note->setWordWrap(true);
+    note->setStyleSheet("color: #808286; font-size: 11px;");
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel | QDialogButtonBox::Help);
+    connect(buttons, &QDialogButtonBox::helpRequested, [] { HelpWindow::open("settings.md"); });
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    auto* layout = new QVBoxLayout(&dialog);
+    layout->addLayout(form);
+    layout->addWidget(note);
+    layout->addWidget(buttons);
+    dialog.setMinimumWidth(420);
+    if (dialog.exec() == QDialog::Accepted)
+        setProjectSettings(chosen());
+}
+
+QList<RenderClip> MainWindow::renderClips(QSize titleSize, bool subtitles) const
 {
     // Titles become see-through pictures made at the size they'll be shown at
-    return m_timeline->renderClips([titleSize](const TimelineClip& c) {
-        return TitleRenderer::imageFile(c.title, titleSize);
-    });
+    return m_timeline->renderClips([titleSize](const TitleStyle& style, int highlight) {
+        return TitleRenderer::imageFile(style, titleSize, highlight);
+    }, subtitles);
 }
 
 void MainWindow::onClipsChanged()
@@ -638,14 +794,20 @@ void MainWindow::onClipsChanged()
     requestPreview();
     updateTimeLabel();
     refreshInspector();
+    m_subtitles->refresh();
+    m_subtitles->setPlayhead(m_timeline->playhead());
     setDirty(true);
 }
 
 void MainWindow::refreshInspector()
 {
     int i = m_timeline->selectedIndex();
-    if (i >= 0 && i < m_timeline->clips().size())
-        m_inspector->showClip(i, m_timeline->clips().at(i), m_timeline->transitionPart(m_timeline->clips().at(i)));
+    if (i >= 0 && i < m_timeline->clips().size()) {
+        TimelineClip shown = m_timeline->clips().at(i);
+        if (shown.isSubtitle())
+            shown.title = m_timeline->subtitleLook(shown); // (the track's look, unless it has its own)
+        m_inspector->showClip(i, shown, m_timeline->transitionPart(shown));
+    }
     else
         m_inspector->showClip(-1, {});
 }
@@ -693,6 +855,7 @@ void MainWindow::newProject()
     stopPlayback();
     m_loadingProject = true;
     m_mediaBin->clear();
+    setProjectSettings({});
     m_timeline->setClips({}, TimelineWidget::defaultTracks());
     m_timeline->setPlayhead(0);
     m_loadingProject = false;
@@ -732,6 +895,7 @@ bool MainWindow::loadProject(const QString& path)
     for (TimelineClip& c : data.clips)
         c.thumb = thumbs.value(c.path);
 
+    setProjectSettings(data.settings);
     m_timeline->setClips(data.clips, data.tracks);
     m_timeline->setPlayhead(data.playhead);
     onPlayheadMoved(data.playhead);
@@ -754,6 +918,7 @@ ProjectFile::Data MainWindow::projectData() const
     data.clips = m_timeline->clips();
     data.tracks = m_timeline->tracks();
     data.playhead = m_timeline->playhead();
+    data.settings = m_settings;
     return data;
 }
 
@@ -819,6 +984,8 @@ void MainWindow::onPlayheadMoved(double sec)
     }
     requestPreview();
     updateTimeLabel();
+    m_inspector->setPlayhead(sec);
+    m_subtitles->setPlayhead(sec);
 }
 
 // ---- Getting around ----
@@ -905,6 +1072,8 @@ void MainWindow::onTick()
     m_timeline->setPlayhead(t);
     requestPreview();
     updateTimeLabel();
+    m_inspector->setPlayhead(t); // keyframed settings show what they are right now
+    m_subtitles->setPlayhead(t);
 }
 
 void MainWindow::goToStart()
@@ -936,7 +1105,9 @@ void MainWindow::exportVideo()
     bool canCopy = ve_timeline_can_copy(check, why, sizeof why) != 0;
     ve_timeline_destroy(check);
 
-    ExportDialog dialog(QSize(p.width, p.height), p.fps, suggested, canCopy, QString::fromUtf8(why), this);
+    const QList<int> subtitleLines = m_timeline->subtitleLines();
+    ExportDialog dialog(QSize(p.width, p.height), p.fps, suggested, canCopy, QString::fromUtf8(why),
+                        !subtitleLines.isEmpty(), this);
     if (dialog.exec() != QDialog::Accepted || dialog.path().isEmpty())
         return;
 
@@ -948,7 +1119,21 @@ void MainWindow::exportVideo()
         QString encoder;
     };
     auto job = std::make_shared<Job>();
-    QList<RenderClip> clips = renderClips(dialog.size()); // titles drawn sharp at the export size
+    QList<RenderClip> clips = renderClips(dialog.size(), dialog.burnSubtitles()); // titles drawn sharp at the export size
+    // Subtitles as their own track and/or file
+    QList<SubtitleFile::Line> subtitleText;
+    for (int i : subtitleLines) {
+        const TimelineClip& c = m_timeline->clips().at(i);
+        subtitleText << SubtitleFile::Line { c.start, c.end(), c.title.text };
+    }
+    auto subtitleBytes = std::make_shared<std::vector<QByteArray>>();
+    auto subtitleList = std::make_shared<std::vector<ve_subtitle>>();
+    if (dialog.subtitleTrack()) {
+        for (const SubtitleFile::Line& l : subtitleText)
+            subtitleBytes->push_back(l.text.toUtf8());
+        for (size_t k = 0; k < subtitleBytes->size(); ++k)
+            subtitleList->push_back(ve_subtitle { subtitleText[int(k)].start, subtitleText[int(k)].end, (*subtitleBytes)[k].constData() });
+    }
     QByteArray path = dialog.path().toUtf8();
     ve_export_settings settings {};
     settings.width = dialog.size().width();
@@ -958,8 +1143,11 @@ void MainWindow::exportVideo()
     settings.force_software = dialog.useGraphicsCard() ? 0 : 1;
     settings.copy_only = dialog.instant() ? 1 : 0;
     settings.format = dialog.format();
+    settings.subtitles = subtitleList->empty() ? nullptr : subtitleList->data();
+    settings.subtitle_count = int(subtitleList->size());
+    settings.subtitle_language = "eng";
 
-    QThread* worker = QThread::create([job, clips, path, settings]() mutable {
+    QThread* worker = QThread::create([job, clips, path, settings, subtitleBytes, subtitleList]() mutable {
         settings.path = path.constData();
         ve_timeline* tl = ve_timeline_create();
         applyClips(tl, clips);
@@ -1002,6 +1190,13 @@ void MainWindow::exportVideo()
     progress.reset();
     delete worker;
 
+    if (job->result == VE_OK && dialog.subtitleFile()) {
+        // The .srt goes right next to the video, with the same name
+        QFileInfo video(dialog.path());
+        QString error;
+        if (!SubtitleFile::save(video.path() + "/" + video.completeBaseName() + ".srt", subtitleText, &error))
+            QMessageBox::warning(this, "Couldn't save the subtitle file", error);
+    }
     if (job->result == VE_OK) {
         QMessageBox box(QMessageBox::Information, "Export done",
                         QString("Saved %1\n(took %2, using %3)")
@@ -1022,6 +1217,108 @@ void MainWindow::exportVideo()
 }
 
 // ---- About ----
+
+void MainWindow::importSubtitles()
+{
+    QString path = QFileDialog::getOpenFileName(this, "Import subtitles", projectFolder(),
+                                                "Subtitles (*.srt *.vtt);;All files (*)");
+    if (path.isEmpty())
+        return;
+    QList<SubtitleFile::Line> lines;
+    QString error;
+    if (!SubtitleFile::load(path, &lines, &error)) {
+        QMessageBox::warning(this, "Couldn't import subtitles", error);
+        return;
+    }
+    // Already got some? Swap them out, or add these as well
+    bool replace = false;
+    if (!m_timeline->subtitleLines().isEmpty()) {
+        QMessageBox ask(QMessageBox::Question, "Import subtitles",
+                        "There are subtitles here already. Replace them, or add these as well?", QMessageBox::Cancel, this);
+        QPushButton* swap = ask.addButton("Replace", QMessageBox::AcceptRole);
+        QPushButton* both = ask.addButton("Add", QMessageBox::AcceptRole);
+        ask.exec();
+        if (ask.clickedButton() != swap && ask.clickedButton() != both)
+            return;
+        replace = ask.clickedButton() == swap;
+    }
+    QList<TimelineClip> clips;
+    for (const SubtitleFile::Line& l : lines) {
+        TimelineClip c;
+        c.kind = TimelineClip::Kind::Subtitle;
+        c.title = TitleStyle::subtitles();
+        c.title.text = l.text;
+        c.start = l.start;
+        c.duration = l.end - l.start;
+        clips << c;
+    }
+    m_timeline->addSubtitles(clips, replace);
+    statusBar()->showMessage(QString("Imported %1 subtitle lines").arg(lines.size()), 5000);
+}
+
+void MainWindow::autoCaptions()
+{
+    if (m_timeline->clips().isEmpty()) {
+        QMessageBox::information(this, "Auto-captions", "Put something with talking in it on the timeline first!");
+        return;
+    }
+    stopPlayback();
+    bool replace = true;
+    // (just the sound matters here, so no title pictures needed)
+    QList<TimelineClip> lines = AutoCaptions::run(this, m_timeline->renderClips(), !m_timeline->subtitleLines().isEmpty(), &replace);
+    if (lines.isEmpty())
+        return;
+    m_timeline->addSubtitles(lines, replace);
+    if (auto* tabs = findChild<QTabWidget*>())
+        tabs->setCurrentWidget(m_subtitles);
+    statusBar()->showMessage(QString("Wrote %1 subtitle lines. Have a read through them in the Subtitles tab.").arg(lines.size()), 8000);
+}
+
+void MainWindow::exportSubtitles()
+{
+    QList<SubtitleFile::Line> lines;
+    for (int i : m_timeline->subtitleLines()) {
+        const TimelineClip& c = m_timeline->clips().at(i);
+        lines << SubtitleFile::Line { c.start, c.end(), c.title.text };
+    }
+    if (lines.isEmpty()) {
+        QMessageBox::information(this, "No subtitles", "There aren't any subtitles to export yet.");
+        return;
+    }
+    QString suggested = m_projectPath.isEmpty() ? QDir(projectFolder()).filePath("Subtitles.srt")
+                                                : QFileInfo(m_projectPath).path() + "/" + QFileInfo(m_projectPath).completeBaseName() + ".srt";
+    QString path = QFileDialog::getSaveFileName(this, "Export subtitles", suggested, "SubRip subtitles (*.srt)");
+    if (path.isEmpty())
+        return;
+    if (!path.endsWith(".srt", Qt::CaseInsensitive))
+        path += ".srt";
+    QString error;
+    if (!SubtitleFile::save(path, lines, &error))
+        QMessageBox::warning(this, "Couldn't save subtitles", error);
+    else
+        statusBar()->showMessage("Saved " + QFileInfo(path).fileName(), 5000);
+}
+
+void MainWindow::evenOutVolume(int index)
+{
+    // Aim for a comfortable loudness (about where speech usually sits), but never clip
+    if (index < 0 || index >= m_timeline->clips().size())
+        return;
+    TimelineClip c = m_timeline->clips().at(index);
+    float rms = 0, peak = 0;
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    int rc = ve_measure_loudness(c.path.toUtf8().constData(), c.in, c.sourceSpan(), &rms, &peak);
+    QApplication::restoreOverrideCursor();
+    if (rc != VE_OK || peak < -80) {
+        statusBar()->showMessage("Couldn't hear anything in that clip to even out", 5000);
+        return;
+    }
+    constexpr float Target = -18.0f, Ceiling = -1.0f;
+    float gainDb = std::min(Target - rms, Ceiling - peak);
+    c.volume = std::clamp(std::pow(10.0f, gainDb / 20.0f), 0.0f, 4.0f);
+    m_timeline->updateClip(index, c, "evenOut");
+    statusBar()->showMessage(QString("Volume set to %1%").arg(int(std::lround(c.volume * 100))), 5000);
+}
 
 void MainWindow::showAbout()
 {
@@ -1097,9 +1394,55 @@ void MainWindow::runDemo(const QStringList& paths, const QString& screenshotPath
     title.animIn = VE_ANIM_SLIDE_UP;
     title.animInDuration = 1.0;
     m_timeline->updateClip(t, title, "demoAnim");
+    // ...and a zoom into the top-left of the clip after the cut (keyframes)
+    {
+        TimelineClip zoomed = m_timeline->clips().at(after);
+        double t0 = 3.0;
+        for (auto [t, size, pos] : { std::tuple { t0, 1.0, 0.0 }, { t0 + 0.6, 2.0, 0.5 }, { t0 + 2.6, 2.0, 0.5 }, { t0 + 3.2, 1.0, 0.0 } }) {
+            zoomed.setKey(VE_KEY_SIZE, t, float(size));
+            zoomed.setKey(VE_KEY_POS_X, t, float(pos));
+            zoomed.setKey(VE_KEY_POS_Y, t, float(pos));
+        }
+        m_timeline->updateClip(after, zoomed, "demoZoom");
+    }
+    // MIXMEDIA_DEMO_SUBS=1 adds some subtitles (word by word) and shows the Subtitles tab
+    const bool demoSubs = qEnvironmentVariableIsSet("MIXMEDIA_DEMO_SUBS");
+    if (demoSubs) {
+        QList<TimelineClip> lines;
+        const char* text[] = { "So today we're styling a table", "First the borders", "Then a splash of colour" };
+        for (int k = 0; k < 3; ++k) {
+            TimelineClip c;
+            c.kind = TimelineClip::Kind::Subtitle;
+            c.title.text = text[k];
+            c.start = cut - 3.0 + k * 2.5;
+            c.duration = 2.3;
+            lines << c;
+        }
+        m_timeline->addSubtitles(lines, false);
+        int first = m_timeline->subtitleLines().first();
+        TimelineClip look = m_timeline->clips().at(first);
+        look.title = m_timeline->subtitleLook(look);
+        look.title.wordByWord = true;
+        look.title.size = 7;
+        look.title.box = false;
+        look.title.outline = 10;
+        m_timeline->updateClip(first, look, "demoSubs");
+    }
+    // MIXMEDIA_DEMO_SHAPE=9:16 (or any shape) tries a different project shape, with the clip filling it
+    if (qEnvironmentVariableIsSet("MIXMEDIA_DEMO_SHAPE")) {
+        ProjectSettings shape;
+        shape.shape = qEnvironmentVariable("MIXMEDIA_DEMO_SHAPE");
+        setProjectSettings(shape);
+        TimelineClip filled = m_timeline->clips().at(after);
+        filled.fill = true;
+        filled.rotation = 4;
+        m_timeline->updateClip(after, filled, "demoFill");
+    }
     m_timeline->selectClip(after);
-    m_timeline->setPlayhead(cut - 1.0); // halfway through the overlap
-    onPlayheadMoved(cut - 1.0);
+    // Halfway through the overlap (MIXMEDIA_DEMO_AT=seconds after the cut picks another moment)
+    double at = qEnvironmentVariableIsSet("MIXMEDIA_DEMO_AT") ? cut + qEnvironmentVariable("MIXMEDIA_DEMO_AT").toDouble() : cut - 1.0;
+    m_timeline->setPlayhead(at);
+    onPlayheadMoved(at);
 
     // Let things load, play for 2 seconds, then take the picture
     // MIXMEDIA_DEMO_WAIT=ms adds extra time before playing (to let slow background work finish)
@@ -1108,7 +1451,7 @@ void MainWindow::runDemo(const QStringList& paths, const QString& screenshotPath
         if (qEnvironmentVariableIsSet("MIXMEDIA_DEMO_STILL")) {
             // Stay put (mid-transition) and show the Transitions tab instead of playing
             if (auto* tabs = findChild<QTabWidget*>())
-                tabs->setCurrentIndex(2); // Effects
+                tabs->setCurrentIndex(qEnvironmentVariableIsSet("MIXMEDIA_DEMO_SUBS") ? tabs->count() - 1 : 2); // Subtitles / Effects
             m_timeline->zoomBy(60); // close up around the playhead
             return;
         }
@@ -1120,7 +1463,15 @@ void MainWindow::runDemo(const QStringList& paths, const QString& screenshotPath
         qInfo("demo: stopped at %.3f", m_timeline->playhead());
     });
     QTimer::singleShot(4000 + wait, this, [this, screenshotPath] {
-        grab().save(screenshotPath);
+        // MIXMEDIA_DEMO_HELP=page.md screenshots that help page instead
+        if (qEnvironmentVariableIsSet("MIXMEDIA_DEMO_HELP")) {
+            HelpWindow::open(qEnvironmentVariable("MIXMEDIA_DEMO_HELP"));
+            for (QWidget* w : QApplication::topLevelWidgets())
+                if (qobject_cast<HelpWindow*>(w))
+                    w->grab().save(screenshotPath);
+        } else {
+            grab().save(screenshotPath);
+        }
         m_dirty = false; // it's only a demo, don't ask to save on the way out
         qApp->quit();
     });

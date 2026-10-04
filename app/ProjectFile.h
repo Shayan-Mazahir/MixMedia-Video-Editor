@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "ProjectSettings.h"
 #include "TimelineClip.h"
 
 #include <QList>
@@ -18,6 +19,7 @@ struct Data {
     QList<TimelineClip> clips;  // thumbnails aren't saved, they get remade on open
     QList<TimelineTrack> tracks; // empty = an older project (from before FX tracks)
     double playhead = 0.0;
+    ProjectSettings settings;
 };
 
 bool save(const QString& path, const Data& data, QString* error);

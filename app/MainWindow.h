@@ -18,6 +18,8 @@ class ClipInspector;
 class MediaBin;
 class PreviewRenderer;
 class PreviewWidget;
+class SubtitlePanel;
+class QComboBox;
 class QLabel;
 class QListWidgetItem;
 class QToolButton;
@@ -62,6 +64,11 @@ private slots:
     bool saveProject();
     bool saveProjectAs();
     void showAbout();
+    void editProjectSettings();
+    void evenOutVolume(int index);
+    void importSubtitles();
+    void autoCaptions();
+    void exportSubtitles();
 
 private:
     struct Project {
@@ -75,8 +82,10 @@ private:
     void buildActions();
     QListWidgetItem* addMediaItem(const QString& path, QString* error);
 
-    Project project() const;
-    QList<RenderClip> renderClips(QSize titleSize) const;
+    Project project() const { return project(m_settings); }
+    Project project(const ProjectSettings& settings) const; // what it'd be with these settings
+    void setProjectSettings(const ProjectSettings& settings);
+    QList<RenderClip> renderClips(QSize titleSize, bool subtitles = true) const;
     void requestPreview();
     void updateTimeLabel();
     void startPlayback();
@@ -102,8 +111,10 @@ private:
     PreviewWidget* m_preview = nullptr;
     TimelineWidget* m_timeline = nullptr;
     ClipInspector* m_inspector = nullptr;
+    SubtitlePanel* m_subtitles = nullptr;
     QLabel* m_timeLabel = nullptr;
     QToolButton* m_playButton = nullptr;
+    QComboBox* m_shapeBox = nullptr;
 
     PreviewRenderer* m_renderer = nullptr;
     AudioPlayer* m_audio = nullptr;
@@ -113,6 +124,7 @@ private:
     double m_playFrom = 0.0;
     bool m_playing = false;
 
+    ProjectSettings m_settings;
     QString m_projectPath;
     bool m_dirty = false;
     bool m_loadingProject = false;

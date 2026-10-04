@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <condition_variable>
 #include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <mutex>
 #include <thread>
@@ -185,12 +186,79 @@ int exportTimeline(Timeline& timeline, const ExportSettings& s, ProgressFn progr
         return VE_ERR_ENCODE;
     ast->time_base = aenc->time_base;
 
+    // ---- Subtitles: a text track players can switch on (MP4's own kind, "mov_text") ----
+    CodecPtr senc;
+    AVStream* sst = nullptr;
+    if (!s.subtitles.empty()) {
+        const AVCodec* scodec = avcodec_find_encoder(AV_CODEC_ID_MOV_TEXT);
+        if (scodec) {
+            senc.reset(avcodec_alloc_context3(scodec));
+            senc->time_base = { 1, 1000 };
+            // The encoder reads subtitles in the ASS format, and wants its header
+            static const char header[] =
+                "[Script Info]\r\nScriptType: v4.00+\r\nPlayResX: 384\r\nPlayResY: 288\r\n\r\n"
+                "[V4+ Styles]\r\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, "
+                "BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, "
+                "Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\r\n"
+                "Style: Default,Arial,16,&Hffffff,&Hffffff,&H0,&H0,0,0,0,0,100,100,0,0,1,1,0,2,10,10,10,0\r\n\r\n"
+                "[Events]\r\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\r\n";
+            senc->subtitle_header = static_cast<uint8_t*>(av_malloc(sizeof header));
+            std::memcpy(senc->subtitle_header, header, sizeof header);
+            senc->subtitle_header_size = int(sizeof header - 1);
+            if (globalHeader)
+                senc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+            if (avcodec_open2(senc.get(), scodec, nullptr) >= 0) {
+                sst = avformat_new_stream(out.fmt, nullptr);
+                if (sst && avcodec_parameters_from_context(sst->codecpar, senc.get()) >= 0) {
+                    sst->time_base = { 1, 1000 };
+                    av_dict_set(&sst->metadata, "language", s.subtitleLanguage.c_str(), 0);
+                } else {
+                    sst = nullptr;
+                }
+            }
+        }
+    }
+
     // ---- Open the file ----
     if (!(out.fmt->oformat->flags & AVFMT_NOFILE) && avio_open(&out.fmt->pb, s.path.c_str(), AVIO_FLAG_WRITE) < 0)
         return VE_ERR_ENCODE;
     if (avformat_write_header(out.fmt, nullptr) < 0)
         return VE_ERR_ENCODE;
 
+
+    // The subtitle lines go in straight away (the file writer sorts them in among the picture and sound)
+    if (sst) {
+        std::vector<uint8_t> buf(1 << 16);
+        PacketPtr spkt(av_packet_alloc());
+        for (const ExportSettings::Subtitle& line : s.subtitles) {
+            std::string text = line.text;
+            for (size_t at = 0; (at = text.find('\n', at)) != std::string::npos;)
+                text.replace(at, 1, "\\N"); // (ASS's way of saying "new line")
+            AVSubtitle sub {};
+            sub.format = 1; // text
+            sub.start_display_time = 0;
+            sub.end_display_time = uint32_t(std::llround((line.end - line.start) * 1000));
+            sub.pts = std::llround(line.start * AV_TIME_BASE);
+            AVSubtitleRect rect {};
+            AVSubtitleRect* rects[1] = { &rect };
+            rect.type = SUBTITLE_ASS;
+            std::string ass = "0,0,Default,,0,0,0,," + text;
+            rect.ass = ass.data();
+            sub.num_rects = 1;
+            sub.rects = rects;
+            int size = avcodec_encode_subtitle(senc.get(), buf.data(), int(buf.size()), &sub);
+            if (size <= 0)
+                continue;
+            if (av_new_packet(spkt.get(), size) < 0)
+                break;
+            std::memcpy(spkt->data, buf.data(), size_t(size));
+            spkt->pts = spkt->dts = std::llround(line.start * 1000);
+            spkt->duration = std::llround((line.end - line.start) * 1000);
+            spkt->stream_index = sst->index;
+            av_packet_rescale_ts(spkt.get(), { 1, 1000 }, sst->time_base);
+            av_interleaved_write_frame(out.fmt, spkt.get());
+        }
+    }
 
     // ---- Two cooks in the kitchen ----
     // A drawing thread decodes and builds frames while this thread encodes them,

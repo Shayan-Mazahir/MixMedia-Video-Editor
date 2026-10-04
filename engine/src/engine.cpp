@@ -13,14 +13,14 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <thread>
 
 struct ve_reader {
     ve::VideoReader reader;
 };
 
-struct ve_timeline {
-    ve::Timeline timeline;
-};
+#include "handles.h"
 
 namespace {
 
@@ -231,6 +231,39 @@ void ve_timeline_set_clips(ve_timeline* tl, const ve_clip* clips, int count)
         clip.scale = c.size > 0 ? c.size : 1.0f;
         clip.posX = c.pos_x;
         clip.posY = c.pos_y;
+        auto edge = [](float v) { return std::clamp(v, 0.0f, 0.95f); };
+        clip.cropLeft = edge(c.crop_left);
+        clip.cropRight = edge(c.crop_right);
+        clip.cropTop = edge(c.crop_top);
+        clip.cropBottom = edge(c.crop_bottom);
+        if (clip.cropLeft + clip.cropRight > 0.95f)
+            clip.cropLeft = clip.cropRight = 0.475f;
+        if (clip.cropTop + clip.cropBottom > 0.95f)
+            clip.cropTop = clip.cropBottom = 0.475f;
+        clip.rotation = std::isfinite(c.rotation) ? float(std::remainder(c.rotation, 360.0)) : 0.0f;
+        clip.flipH = c.flip_h != 0;
+        clip.flipV = c.flip_v != 0;
+        clip.fill = c.fill_frame != 0;
+        clip.keepPitch = c.keep_pitch != 0;
+        clip.denoise = std::clamp(c.denoise, 0.0f, 1.0f);
+        clip.duck = c.duck != 0;
+        clip.duckAmount = c.duck_amount > 0 ? std::clamp(c.duck_amount, 0.0f, 1.0f) : 0.7f;
+        clip.reverse = c.reverse != 0;
+        clip.freeze = c.freeze != 0;
+        clip.key.on = c.chroma_key != 0;
+        clip.key.r = uint8_t(c.key_color >> 16);
+        clip.key.g = uint8_t(c.key_color >> 8);
+        clip.key.b = uint8_t(c.key_color);
+        clip.key.strength = std::clamp(c.key_strength, 0.0f, 1.0f);
+        clip.key.softness = std::clamp(c.key_softness, 0.0f, 1.0f);
+        clip.key.spill = std::clamp(c.key_spill, 0.0f, 1.0f);
+        for (int k = 0; k < c.keyframe_count && c.keyframes; ++k) {
+            const ve_keyframe& key = c.keyframes[k];
+            if (key.param >= 0 && key.param < VE_KEY_COUNT && std::isfinite(key.time) && std::isfinite(key.value))
+                clip.keys[size_t(key.param)].push_back({ key.time, key.value });
+        }
+        for (auto& list : clip.keys)
+            std::stable_sort(list.begin(), list.end(), [](const ve::Keyframe& a, const ve::Keyframe& b) { return a.time < b.time; });
         clip.effects.look = (c.look > 0 && c.look < VE_LOOK_COUNT) ? ve::Look(c.look) : ve::Look::None;
         clip.effects.brightness = c.brightness;
         clip.effects.contrast = c.contrast;
@@ -333,6 +366,13 @@ int ve_export(ve_timeline* tl, ve_export_settings* settings,
     s.crf = settings->crf > 0 ? settings->crf : 20;
     s.hardware = settings->force_software == 0;
     s.format = ve::ExportFormat(std::clamp(settings->format, 0, int(VE_FORMAT_M4A)));
+    for (int i = 0; i < settings->subtitle_count && settings->subtitles; ++i) {
+        const ve_subtitle& sub = settings->subtitles[i];
+        if (sub.text && sub.end > sub.start)
+            s.subtitles.push_back({ sub.start, sub.end, sub.text });
+    }
+    if (settings->subtitle_language && std::strlen(settings->subtitle_language) == 3)
+        s.subtitleLanguage = settings->subtitle_language;
 
     if (s.format == ve::ExportFormat::Gif) {
         copyName(settings->encoder_used, sizeof settings->encoder_used, "gif");
@@ -347,6 +387,36 @@ int ve_export(ve_timeline* tl, ve_export_settings* settings,
     int rc = ve::exportTimeline(tl->timeline, s, progress, user, &used);
     copyName(settings->encoder_used, sizeof settings->encoder_used, used.c_str());
     return rc;
+}
+
+void ve_set_thread_limit(int threads)
+{
+    ve::setThreadLimit(threads);
+}
+
+int ve_cpu_threads(void)
+{
+    return std::max(1, int(std::thread::hardware_concurrency()));
+}
+
+#ifndef VE_HAVE_WHISPER
+// Built without auto-captions (-DMIXMEDIA_CAPTIONS=OFF)
+int ve_captions_available(void)
+{
+    return 0;
+}
+
+int ve_auto_captions(ve_timeline*, const ve_caption_settings*, ve_caption_word_fn, ve_progress_fn, void*)
+{
+    return VE_ERR_ARG;
+}
+#endif
+
+int ve_measure_loudness(const char* path, double from, double length, float* rms_db, float* peak_db)
+{
+    if (!path || !rms_db || !peak_db)
+        return VE_ERR_ARG;
+    return ve::measureLoudness(path, from, length, rms_db, peak_db) ? VE_OK : VE_ERR_OPEN;
 }
 
 int ve_export_format_available(int format)

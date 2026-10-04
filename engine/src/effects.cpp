@@ -4,11 +4,25 @@
 #include "effects.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <thread>
 
 namespace ve {
+
+namespace {
+std::atomic<int> g_threadLimit { 0 };
+}
+
+void setThreadLimit(int threads) { g_threadLimit = std::max(0, threads); }
+int threadLimit() { return g_threadLimit; }
+
+int workerThreads()
+{
+    int limit = g_threadLimit;
+    return limit > 0 ? std::clamp(limit, 1, 32) : std::clamp(int(std::thread::hardware_concurrency()) / 2, 1, 8);
+}
 
 namespace {
 
@@ -104,22 +118,49 @@ LookRecipe recipeFor(Look look)
     return {};
 }
 
-// Splits the rows of a picture between a few threads. Small jobs just run here.
-template <typename Fn>
-void parallelRows(int rows, Fn&& fn)
+// ---- Green screen ----
+
+} // namespace
+
+void applyChromaKey(uint8_t* pixels, int w, int h, const ChromaKey& key, bool bgra)
 {
-    static const int threads = std::clamp(int(std::thread::hardware_concurrency()) / 2, 1, 8);
-    if (threads == 1 || rows < 128) {
-        fn(0, rows);
-        return;
-    }
-    std::vector<std::thread> pool;
-    int chunk = (rows + threads - 1) / threads;
-    for (int a = 0; a < rows; a += chunk)
-        pool.emplace_back([&fn, a, b = std::min(rows, a + chunk)] { fn(a, b); });
-    for (std::thread& t : pool)
-        t.join();
+    // Compare colours by their tint only (blue-ness and red-ness, ignoring brightness), so
+    // shadows and bright patches on the screen still count as the screen
+    auto tint = [](float r, float g, float b, float& cb, float& cr) {
+        cb = -0.1146f * r - 0.3854f * g + 0.5f * b;
+        cr = 0.5f * r - 0.4542f * g - 0.0458f * b;
+    };
+    float keyCb, keyCr;
+    tint(key.r, key.g, key.b, keyCb, keyCr);
+    const float reach = std::max(1.0f, std::hypot(keyCb, keyCr)); // how far the key is from grey
+    const float inner = std::clamp(key.strength, 0.0f, 1.0f) * reach;
+    const float edge = std::max(1.0f, std::clamp(key.softness, 0.0f, 1.0f) * reach);
+    // Spill: green (or blue) light bouncing onto the subject. Pull that channel down to the others.
+    const int spillChannel = key.g >= key.r && key.g >= key.b ? 1 : (key.b >= key.r ? 2 : -1);
+    const float spill = std::clamp(key.spill, 0.0f, 1.0f);
+    const int R = bgra ? 2 : 0, B = bgra ? 0 : 2;
+
+    parallelRows(h, [&](int y0, int y1) {
+        for (int y = y0; y < y1; ++y) {
+            uint8_t* p = pixels + size_t(y) * w * 4;
+            for (int x = 0; x < w; ++x, p += 4) {
+                float cb, cr;
+                tint(p[R], p[1], p[B], cb, cr);
+                float d = std::hypot(cb - keyCb, cr - keyCr);
+                float keep = std::clamp((d - inner) / edge, 0.0f, 1.0f);
+                p[3] = uint8_t(p[3] * keep);
+                if (spillChannel >= 0 && spill > 0 && keep > 0) {
+                    int c = spillChannel == 1 ? 1 : B;
+                    int others = spillChannel == 1 ? std::max(p[R], p[B]) : std::max(p[R], p[1]);
+                    if (p[c] > others)
+                        p[c] = uint8_t(p[c] - (p[c] - others) * spill);
+                }
+            }
+        }
+    });
 }
+
+namespace {
 
 // ---- Blur: three quick box blurs in a row look just like a proper (slow) Gaussian blur ----
 

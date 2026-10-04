@@ -305,6 +305,7 @@ void Timeline::drawSlot(Slot& s, double t, int w, int h, uint8_t* canvas, bool b
     if (!reader)
         return;
     const Clip& c = s.clip;
+    reader->setBackwards(c.reverse); // (decoders get shared between clips, so say which way every time)
     const AVFrame* frame = reader->frameAt(std::max(0.0, c.sourceTime(t)));
     if (!frame || frame->width <= 0 || frame->height <= 0)
         return;
@@ -322,6 +323,10 @@ void Timeline::drawSlot(Slot& s, double t, int w, int h, uint8_t* canvas, bool b
             mods.scale *= 0.5 + 0.5 * e;
             mods.opacity *= e;
             break;
+        case Anim::Rise:
+            mods.dy += (1 - e) * h * 0.06;
+            mods.opacity *= e;
+            break;
         case Anim::Wipe: return e; // handled once we know where the clip sits
         default: break;
         }
@@ -333,51 +338,121 @@ void Timeline::drawSlot(Slot& s, double t, int w, int h, uint8_t* canvas, bool b
     if (c.animOut != Anim::None && c.animOutDuration > 0)
         wipeOut = animate(c.animOut, easeOut((c.end() - t) / c.animOutDuration));
 
-    // Fit inside the canvas keeping the shape (black bars if it doesn't match),
-    // then the clip's own size and position on top (picture-in-picture)
-    double fit = std::min(double(w) / frame->width, double(h) / frame->height);
-    double size = std::clamp(double(c.scale) * mods.scale, 0.02, 4.0);
-    int fw = std::max(1, int(std::lround(frame->width * fit * size)));
-    int fh = std::max(1, int(std::lround(frame->height * fit * size)));
-    int x = (w - fw) / 2 + int(std::lround(c.posX * w + mods.dx));
-    int y = (h - fh) / 2 + int(std::lround(c.posY * h + mods.dy));
+    // What's left of the picture after cropping
+    const double cw = std::max(2.0, frame->width * (1.0 - c.cropLeft - c.cropRight));
+    const double ch = std::max(2.0, frame->height * (1.0 - c.cropTop - c.cropBottom));
+    // Turned a quarter? Then it's the other way round when fitting it into the frame
+    // Where it is right now (any of these can be keyframed)
+    const double rotation = c.at(Param::Rotation, t, c.rotation);
+    const double scaleNow = c.at(Param::Scale, t, c.scale);
+    const double posX = c.at(Param::PosX, t, c.posX), posY = c.at(Param::PosY, t, c.posY);
+    const double quarter = std::abs(std::remainder(rotation, 180.0));
+    const bool sideways = std::abs(quarter - 90.0) < 0.01;
+    const double boxW = sideways ? ch : cw, boxH = sideways ? cw : ch;
+
+    // Fit inside the canvas keeping the shape (black bars if it doesn't match), or fill it
+    // (cutting off what hangs over), then the clip's own size and position on top (picture-in-picture)
+    double fit = c.fill ? std::max(w / boxW, h / boxH) : std::min(w / boxW, h / boxH);
+    double size = std::clamp(scaleNow * mods.scale, 0.02, 10.0);
+    int fw = std::max(1, int(std::lround(cw * fit * size)));
+    int fh = std::max(1, int(std::lround(ch * fit * size)));
+    int x = (w - fw) / 2 + int(std::lround(posX * w + mods.dx));
+    int y = (h - fh) / 2 + int(std::lround(posY * h + mods.dy));
 
     // Solid and fully faded in? Paint it straight on. Otherwise mix it with what's underneath.
-    double opacity = c.envelope(t) * c.opacity * mods.opacity;
+    double opacity = c.envelope(t) * std::clamp(c.at(Param::Opacity, t, c.opacity), 0.0f, 1.0f) * mods.opacity;
     if (opacity <= 0.0)
         return;
-    int x0 = std::max({ 0, x, mods.clipX0 });
-    int x1 = std::min({ w, x + fw, mods.clipX1 });
-    int y0 = std::max({ 0, y, mods.clipY0 });
-    int y1 = std::min({ h, y + fh, mods.clipY1 });
-    // Wipe animations uncover the clip from left to right (and cover it back up when leaving)
-    x1 = std::min(x1, x + int(std::lround(fw * std::min(wipeIn, wipeOut))));
-    if (x0 >= x1 || y0 >= y1)
+    // Where it may draw on the canvas: inside the frame, any transition's box, and the
+    // part a wipe animation has uncovered (from left to right)
+    int boxX0 = std::max(0, mods.clipX0), boxY0 = std::max(0, mods.clipY0);
+    int boxX1 = std::min(w, mods.clipX1), boxY1 = std::min(h, mods.clipY1);
+    boxX1 = std::min(boxX1, x + int(std::lround(fw * std::min(wipeIn, wipeOut))));
+    int x0 = std::max(x, boxX0), x1 = std::min(x + fw, boxX1);
+    int y0 = std::max(y, boxY0), y1 = std::min(y + fh, boxY1);
+    if (!c.turned() && (x0 >= x1 || y0 >= y1))
         return;
 
-    bool solid = opacity >= 1.0 && !hasAlpha(frame);
+    const FrameCrop crop { c.cropLeft, c.cropRight, c.cropTop, c.cropBottom };
+    bool solid = opacity >= 1.0 && !hasAlpha(frame) && !c.key.on;
+    // Green screen first (it needs the original colours), then the effects
+    auto treat = [&](uint8_t* px, int pw, int ph) {
+        if (c.key.on)
+            applyChromaKey(px, pw, ph, c.key, bgra);
+        if (c.effects.any())
+            applyEffects(px, pw, ph, c.effects, bgra, m_fx);
+    };
+
+    if (!c.turned() && (fw > w + 2 || fh > h + 2)) {
+        // Zoomed in past the edges: only scale the bit of the picture that actually shows,
+        // instead of blowing up the whole thing and throwing most of it away.
+        // Work in source pixels, trimmed to even numbers like the scaler does.
+        const int W = frame->width, H = frame->height;
+        auto even = [](double v) { return int(v) & ~1; };
+        const int baseL = even(std::clamp(c.cropLeft, 0.0f, 0.95f) * W), baseR = even(std::clamp(c.cropRight, 0.0f, 0.95f) * W);
+        const int baseT = even(std::clamp(c.cropTop, 0.0f, 0.95f) * H), baseB = even(std::clamp(c.cropBottom, 0.0f, 0.95f) * H);
+        const int srcW = W - baseL - baseR, srcH = H - baseT - baseB;
+        if (srcW < 4 || srcH < 4)
+            return;
+        // The showing part, in source pixels (rounded outwards)
+        const int u0 = even(std::max(0.0, double(x0 - x) * srcW / fw));
+        const int u1 = std::min(srcW, int(std::ceil(double(x1 - x) * srcW / fw)) + 2);
+        const int v0 = even(std::max(0.0, double(y0 - y) * srcH / fh));
+        const int v1 = std::min(srcH, int(std::ceil(double(y1 - y) * srcH / fh)) + 2);
+        const int cutR = even(srcW - u1), cutB = even(srcH - v1);
+        const int regionW = srcW - u0 - cutR, regionH = srcH - v0 - cutB;
+        if (regionW < 2 || regionH < 2)
+            return;
+        // (the +0.5 makes the scaler's own rounding land on exactly these pixels)
+        const FrameCrop region { float((baseL + u0 + 0.5) / W), float((baseR + cutR + 0.5) / W),
+                                 float((baseT + v0 + 0.5) / H), float((baseB + cutB + 0.5) / H) };
+        // Where that part lands on the canvas, and how big
+        const int ox = x + int(std::lround(double(u0) * fw / srcW));
+        const int oy = y + int(std::lround(double(v0) * fh / srcH));
+        const int ow = std::max(1, int(std::lround(double(regionW) * fw / srcW)));
+        const int oh = std::max(1, int(std::lround(double(regionH) * fh / srcH)));
+        m_scratch.resize(size_t(ow) * oh * 4);
+        if (!reader->scale(frame, ow, oh, m_scratch.data(), ow * 4, bgra, region))
+            return;
+        treat(m_scratch.data(), ow, oh);
+        const int dx0 = std::max(x0, ox), dx1 = std::min(x1, ox + ow);
+        for (int row = std::max(y0, oy); row < std::min(y1, oy + oh); ++row) {
+            if (dx0 >= dx1)
+                break;
+            uint8_t* dst = canvas + (size_t(row) * w + dx0) * 4;
+            const uint8_t* src = m_scratch.data() + (size_t(row - oy) * ow + (dx0 - ox)) * 4;
+            if (solid)
+                std::memcpy(dst, src, size_t(dx1 - dx0) * 4);
+            else
+                blendRow(dst, src, dx1 - dx0, opacity);
+        }
+        return;
+    }
     bool wholeCanvas = fw == w && fh == h && x == 0 && y == 0 && x0 == 0 && y0 == 0 && x1 == w && y1 == h;
-    bool effects = c.effects.any();
+    bool effects = c.effects.any() || c.key.on;
     const uint8_t* pixels = nullptr;
     if (reader->isStill()) {
-        // Pictures never change, so scale once and reuse it until the size changes
-        if (s.still.empty() || s.stillW != fw || s.stillH != fh || s.stillBgra != bgra) {
+        // Pictures never change, so scale once and reuse it until the size (or crop) changes
+        const float cropKey[4] = { c.cropLeft, c.cropRight, c.cropTop, c.cropBottom };
+        if (s.still.empty() || s.stillW != fw || s.stillH != fh || s.stillBgra != bgra
+            || !std::equal(cropKey, cropKey + 4, s.stillCrop)) {
             s.still.resize(size_t(fw) * fh * 4);
-            if (!reader->scale(frame, fw, fh, s.still.data(), fw * 4, bgra)) {
+            if (!reader->scale(frame, fw, fh, s.still.data(), fw * 4, bgra, crop)) {
                 s.still.clear();
                 return;
             }
             s.stillW = fw;
             s.stillH = fh;
             s.stillBgra = bgra;
+            std::copy(cropKey, cropKey + 4, s.stillCrop);
         }
         pixels = s.still.data();
-    } else if (solid && wholeCanvas && !effects) {
-        reader->scale(frame, w, h, canvas, w * 4, bgra);
+    } else if (solid && wholeCanvas && !effects && !c.turned()) {
+        reader->scale(frame, w, h, canvas, w * 4, bgra, crop);
         return;
     } else {
         m_scratch.resize(size_t(fw) * fh * 4);
-        if (!reader->scale(frame, fw, fh, m_scratch.data(), fw * 4, bgra))
+        if (!reader->scale(frame, fw, fh, m_scratch.data(), fw * 4, bgra, crop))
             return;
         pixels = m_scratch.data();
     }
@@ -385,8 +460,13 @@ void Timeline::drawSlot(Slot& s, double t, int w, int h, uint8_t* canvas, bool b
     if (effects) {
         // Work on a copy, so a cached still picture stays untouched
         m_layer.assign(pixels, pixels + size_t(fw) * fh * 4);
-        applyEffects(m_layer.data(), fw, fh, c.effects, bgra, m_fx);
+        treat(m_layer.data(), fw, fh);
         pixels = m_layer.data();
+    }
+
+    if (c.turned()) {
+        drawTurned(canvas, w, h, pixels, fw, fh, x + fw / 2.0, y + fh / 2.0, rotation, c, opacity, boxX0, boxY0, boxX1, boxY1);
+        return;
     }
 
     // Only the part that's actually showing
@@ -398,6 +478,62 @@ void Timeline::drawSlot(Slot& s, double t, int w, int h, uint8_t* canvas, bool b
         else
             blendRow(dst, src, x1 - x0, opacity);
     }
+}
+
+void Timeline::drawTurned(uint8_t* canvas, int w, int /*h*/, const uint8_t* src, int fw, int fh, double cx, double cy,
+                          double rotation, const Clip& c, double opacity, int boxX0, int boxY0, int boxX1, int boxY1)
+{
+    // For each pixel on the canvas, turn backwards to find which bit of the picture lands there,
+    // and mix the four nearest picture pixels for smooth edges
+    const double angle = rotation * M_PI / 180.0;
+    const double cosA = std::cos(angle), sinA = std::sin(angle);
+    const double mx = c.flipH ? -1.0 : 1.0, my = c.flipV ? -1.0 : 1.0;
+
+    // Only bother with the area the turned picture covers
+    const double hw = fw / 2.0, hh = fh / 2.0;
+    const double reachX = std::abs(hw * cosA) + std::abs(hh * sinA);
+    const double reachY = std::abs(hw * sinA) + std::abs(hh * cosA);
+    const int x0 = std::max(boxX0, int(std::floor(cx - reachX)));
+    const int x1 = std::min(boxX1, int(std::ceil(cx + reachX)));
+    const int y0 = std::max(boxY0, int(std::floor(cy - reachY)));
+    const int y1 = std::min(boxY1, int(std::ceil(cy + reachY)));
+    if (x0 >= x1 || y0 >= y1)
+        return;
+    const int strength = int(std::clamp(opacity, 0.0, 1.0) * 256);
+
+    parallelRows(y1 - y0, [&](int r0, int r1) {
+        for (int py = y0 + r0; py < y0 + r1; ++py) {
+            const double dy = py + 0.5 - cy;
+            uint8_t* dst = canvas + (size_t(py) * w + x0) * 4;
+            for (int px = x0; px < x1; ++px, dst += 4) {
+                const double dx = px + 0.5 - cx;
+                // Undo the turn (clockwise on screen), then the mirroring
+                const double u = (cosA * dx + sinA * dy) * mx + hw - 0.5;
+                const double v = (-sinA * dx + cosA * dy) * my + hh - 0.5;
+                if (u < -0.5 || v < -0.5 || u > fw - 0.5 || v > fh - 0.5)
+                    continue;
+                const double uc = std::clamp(u, 0.0, fw - 1.0), vc = std::clamp(v, 0.0, fh - 1.0);
+                const int ix = std::min(int(uc), fw - 2 < 0 ? 0 : fw - 2), iy = std::min(int(vc), fh - 2 < 0 ? 0 : fh - 2);
+                const int ix1 = std::min(ix + 1, fw - 1), iy1 = std::min(iy + 1, fh - 1);
+                const int fx = int((uc - ix) * 256), fy = int((vc - iy) * 256);
+                const uint8_t* p00 = src + (size_t(iy) * fw + ix) * 4;
+                const uint8_t* p10 = src + (size_t(iy) * fw + ix1) * 4;
+                const uint8_t* p01 = src + (size_t(iy1) * fw + ix) * 4;
+                const uint8_t* p11 = src + (size_t(iy1) * fw + ix1) * 4;
+                int px4[4];
+                for (int k = 0; k < 4; ++k) {
+                    int top = p00[k] * (256 - fx) + p10[k] * fx;
+                    int bottom = p01[k] * (256 - fx) + p11[k] * fx;
+                    px4[k] = (top * (256 - fy) + bottom * fy) >> 16;
+                }
+                const int a = (px4[3] * strength) >> 8;
+                if (a <= 0)
+                    continue;
+                for (int k = 0; k < 3; ++k)
+                    dst[k] = uint8_t((px4[k] * a + dst[k] * (255 - a)) / 255);
+            }
+        }
+    });
 }
 
 void Timeline::drawTransition(Slot& a, Slot& b, double t, int w, int h, uint8_t* canvas, bool bgra)
@@ -595,65 +731,144 @@ void Timeline::renderVideo(double t, int w, int h, uint8_t* rgba, bool bgra)
     }
 }
 
+const NoiseProfile& Timeline::noiseFor(const Clip& c)
+{
+    std::string key = c.path + "|" + std::to_string(std::llround(c.in * 10)) + "|"
+                      + std::to_string(std::llround(c.duration * c.speed * 10));
+    auto it = m_noise.find(key);
+    if (it == m_noise.end())
+        it = m_noise.emplace(key, learnNoise(c.path, c.in, c.duration * c.speed)).first;
+    return it->second;
+}
+
+void Timeline::followTalking(double t, const float* mix, int frames)
+{
+    // How much talking (any sound at all from the clips that don't duck) there is, sample by sample.
+    // Quick to notice it starting, slow to let go, so music doesn't bob up between words.
+    if (std::abs(t - m_talkNext) > 1e-3)
+        m_talkLevel = m_talkPresence = 0.0f; // jumped: start afresh
+    const float attack = 1.0f - std::exp(-1.0f / (0.010f * AudioRate));
+    const float release = 1.0f - std::exp(-1.0f / (0.250f * AudioRate));
+    const float rise = 1.0f - std::exp(-1.0f / (0.080f * AudioRate));
+    const float fall = 1.0f - std::exp(-1.0f / (0.600f * AudioRate));
+    m_talking.resize(size_t(frames));
+    for (int i = 0; i < frames; ++i) {
+        float level = 0.5f * (std::abs(mix[i * 2]) + std::abs(mix[i * 2 + 1]));
+        m_talkLevel += (level - m_talkLevel) * (level > m_talkLevel ? attack : release);
+        float db = 20.0f * std::log10(std::max(m_talkLevel, 1e-6f));
+        float target = std::clamp((db + 45.0f) / 15.0f, 0.0f, 1.0f); // -45dB = nothing, -30dB = definitely talking
+        m_talkPresence += (target - m_talkPresence) * (target > m_talkPresence ? rise : fall);
+        m_talking[size_t(i)] = m_talkPresence;
+    }
+    m_talkNext = t + double(frames) / AudioRate;
+}
+
 void Timeline::renderAudio(double t, int frames, float* out)
 {
     closeIdleAudio(t);
     std::memset(out, 0, sizeof(float) * frames * AudioChannels);
     double windowEnd = t + double(frames) / AudioRate;
 
-    for (Slot& s : m_slots) {
-        const Clip& c = s.clip;
-        // (a transition borrows a little sound either side of the clip, for a crossfade)
-        const double from0 = c.start - c.preRoll, to0 = c.end() + c.postRoll;
-        if (!c.useAudio || to0 <= t || from0 >= windowEnd)
-            continue;
-        AudioReader* reader = audioFor(s, t);
-        if (!reader)
-            continue;
-
-        // Which part of this chunk does the clip cover?
-        // (worked out as doubles first so a really long clip can't overflow an int)
-        int from = int(std::clamp(std::ceil((from0 - t) * AudioRate), 0.0, double(frames)));
-        int to = int(std::clamp(std::floor((to0 - t) * AudioRate), 0.0, double(frames)));
-        if (to <= from)
-            continue;
-
-        int n = to - from;
-        m_mix.resize(size_t(n) * AudioChannels);
-        double sourceStart = c.sourceTime(t + double(from) / AudioRate);
-        if (c.speed == 1.0) {
-            reader->read(sourceStart, n, m_mix.data());
-        } else {
-            // Sped up or slowed down: read that much more (or less) sound and squash/stretch it.
-            // (Like playing a record faster, so the pitch changes too.)
-            int need = int(std::ceil(n * c.speed)) + 2;
-            m_speedBuf.resize(size_t(need) * AudioChannels);
-            reader->read(sourceStart, need, m_speedBuf.data());
-            for (int i = 0; i < n; ++i) {
-                double pos = i * c.speed;
-                int k = std::min(int(pos), need - 2);
-                float frac = float(pos - k);
-                for (int ch = 0; ch < AudioChannels; ++ch)
-                    m_mix[size_t(i) * 2 + ch] = m_speedBuf[size_t(k) * 2 + ch] * (1 - frac)
-                                                + m_speedBuf[size_t(k + 1) * 2 + ch] * frac;
-            }
+    // Clips set to duck (music) go in second, once we know how much talking there is
+    bool anyDucking = false;
+    for (int pass = 0; pass < 2; ++pass) {
+        if (pass == 1) {
+            if (!anyDucking)
+                break;
+            followTalking(t, out, frames);
         }
-        // Volume, with the fades worked out sample by sample so they're smooth
-        float* dst = out + size_t(from) * AudioChannels;
-        bool blendsIn = c.blendInTo > c.blendInFrom, blendsOut = c.blendOutTo > c.blendOutFrom;
-        bool fading = c.fadeIn > 0 || c.fadeOut > 0 || blendsIn || blendsOut;
-        for (int i = 0; i < n; ++i) {
-            float gain = c.volume;
-            if (fading) {
-                double when = t + double(from + i) / AudioRate;
-                gain *= float(c.envelope(std::clamp(when, c.start, c.end())));
-                if (blendsIn && when < c.blendInTo) // crossfading in from the clip before
-                    gain *= float(std::clamp((when - c.blendInFrom) / (c.blendInTo - c.blendInFrom), 0.0, 1.0));
-                if (blendsOut && when > c.blendOutFrom) // crossfading out into the clip after
-                    gain *= float(std::clamp((c.blendOutTo - when) / (c.blendOutTo - c.blendOutFrom), 0.0, 1.0));
+        for (Slot& s : m_slots) {
+            const Clip& c = s.clip;
+            if (c.duck && c.useAudio)
+                anyDucking = true;
+            if (c.duck != (pass == 1))
+                continue;
+            // (a transition borrows a little sound either side of the clip, for a crossfade)
+            const double from0 = c.start - c.preRoll, to0 = c.end() + c.postRoll;
+            if (!c.useAudio || to0 <= t || from0 >= windowEnd)
+                continue;
+            AudioReader* reader = audioFor(s, t);
+            if (!reader)
+                continue;
+
+            // Which part of this chunk does the clip cover?
+            // (worked out as doubles first so a really long clip can't overflow an int)
+            int from = int(std::clamp(std::ceil((from0 - t) * AudioRate), 0.0, double(frames)));
+            int to = int(std::clamp(std::floor((to0 - t) * AudioRate), 0.0, double(frames)));
+            if (to <= from)
+                continue;
+
+            int n = to - from;
+            m_mix.resize(size_t(n) * AudioChannels);
+            const double when = t + double(from) / AudioRate;
+            // (backwards: start at the matching spot near the end, exactly, no frame-edge nudge for sound)
+            double sourceStart = c.reverse ? c.in + (c.end() - when) * c.speed : c.sourceTime(when);
+            // The file's sound, cleaned of background noise if asked (forwards only)
+            const bool clean = c.denoise > 0.0f && !c.reverse;
+            if (clean && !s.denoiser)
+                s.denoiser = std::make_unique<Denoiser>();
+            auto source = [&](int64_t fromSample, int count, float* to) {
+                if (clean) {
+                    s.denoiser->read(*reader, noiseFor(c), c.denoise, fromSample, count, to);
+                    return;
+                }
+                std::fill(to, to + size_t(count) * AudioChannels, 0.0f);
+                int skip = fromSample < 0 ? int(std::min<int64_t>(-fromSample, count)) : 0;
+                if (skip < count)
+                    reader->read(double(fromSample + skip) / AudioRate, count - skip, to + size_t(skip) * AudioChannels);
+            };
+            // (backwards: sourceStart is where it starts from, walking back through the file)
+            auto readSound = [&](int count, float* to) {
+                if (c.reverse)
+                    reader->readBackwards(sourceStart, count, to);
+                else
+                    source(std::llround(sourceStart * AudioRate), count, to);
+            };
+            if (c.speed != 1.0 && c.keepPitch && !c.reverse) {
+                // Faster or slower, same pitch
+                if (!s.stretcher)
+                    s.stretcher = std::make_unique<TimeStretcher>();
+                s.stretcher->render(source, c.in, c.speed, std::llround((when - c.start) * AudioRate), n, m_mix.data());
+            } else if (c.speed == 1.0) {
+                readSound(n, m_mix.data());
+            } else {
+                // Sped up or slowed down: read that much more (or less) sound and squash/stretch it.
+                // (Like playing a record faster, so the pitch changes too.)
+                int need = int(std::ceil(n * c.speed)) + 2;
+                m_speedBuf.resize(size_t(need) * AudioChannels);
+                readSound(need, m_speedBuf.data());
+                for (int i = 0; i < n; ++i) {
+                    double pos = i * c.speed;
+                    int k = std::min(int(pos), need - 2);
+                    float frac = float(pos - k);
+                    for (int ch = 0; ch < AudioChannels; ++ch)
+                        m_mix[size_t(i) * 2 + ch] = m_speedBuf[size_t(k) * 2 + ch] * (1 - frac)
+                                                    + m_speedBuf[size_t(k + 1) * 2 + ch] * frac;
+                }
             }
-            dst[i * 2] += m_mix[i * 2] * gain;
-            dst[i * 2 + 1] += m_mix[i * 2 + 1] * gain;
+            // Volume, with the fades worked out sample by sample so they're smooth
+            float* dst = out + size_t(from) * AudioChannels;
+            bool blendsIn = c.blendInTo > c.blendInFrom, blendsOut = c.blendOutTo > c.blendOutFrom;
+            bool fading = c.fadeIn > 0 || c.fadeOut > 0 || blendsIn || blendsOut;
+            const bool volumeKeys = !c.keys[size_t(Param::Volume)].empty();
+            float volume = c.volume;
+            for (int i = 0; i < n; ++i) {
+                if (volumeKeys && i % 64 == 0) // keyframed volume: a fresh value every ~1ms is plenty smooth
+                    volume = std::max(0.0f, c.at(Param::Volume, t + double(from + i) / AudioRate, c.volume));
+                float gain = volume;
+                if (fading) {
+                    double when = t + double(from + i) / AudioRate;
+                    gain *= float(c.envelope(std::clamp(when, c.start, c.end())));
+                    if (blendsIn && when < c.blendInTo) // crossfading in from the clip before
+                        gain *= float(std::clamp((when - c.blendInFrom) / (c.blendInTo - c.blendInFrom), 0.0, 1.0));
+                    if (blendsOut && when > c.blendOutFrom) // crossfading out into the clip after
+                        gain *= float(std::clamp((c.blendOutTo - when) / (c.blendOutTo - c.blendOutFrom), 0.0, 1.0));
+                }
+                if (pass == 1) // music: down while there's talking
+                    gain *= 1.0f - c.duckAmount * m_talking[size_t(from + i)];
+                dst[i * 2] += m_mix[i * 2] * gain;
+                dst[i * 2 + 1] += m_mix[i * 2 + 1] * gain;
+            }
         }
     }
 
@@ -691,6 +906,10 @@ bool Timeline::copyPlan(std::string& source, std::vector<CopySegment>& segments,
             source = c.path;
         else if (c.path != source) {
             why = "Titles, pictures and clips from different files need a normal export.";
+            return false;
+        }
+        if (c.denoise > 0 || c.duck || (c.keepPitch && c.speed != 1.0)) {
+            why = "Sound clean-up and ducking need a normal export.";
             return false;
         }
         if (c.fadeIn > 0 || c.fadeOut > 0 || std::abs(c.volume - 1.0f) > 0.001f) {

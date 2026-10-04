@@ -21,7 +21,7 @@ inline QString animationName(int type)
 {
     static const char* names[VE_ANIM_COUNT] = {
         "None", "Fade", "Slide from the left", "Slide from the right",
-        "Slide from the top", "Slide from the bottom", "Zoom (pop)", "Wipe (reveal)",
+        "Slide from the top", "Slide from the bottom", "Zoom (pop)", "Wipe (reveal)", "Rise (float up)",
     };
     return (type >= 0 && type < VE_ANIM_COUNT) ? QString(names[type]) : QString();
 }

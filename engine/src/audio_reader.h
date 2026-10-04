@@ -23,6 +23,10 @@ public:
     // Returns false if there was nothing there at all (past the end of the file).
     bool read(double sec, int frames, float* out);
 
+    // Playing backwards: the `frames` samples leading up to `end`, last one first.
+    // Decodes a couple of seconds at a time and walks back through them.
+    void readBackwards(double end, int frames, float* out);
+
 private:
     void seekTo(double sec);
     bool decodeMore();
@@ -44,6 +48,9 @@ private:
     std::vector<float> m_buf; // decoded samples waiting to be used
     double m_bufStart = 0.0;  // time of the first sample in m_buf
     bool m_bufValid = false;
+
+    std::vector<float> m_back; // the chunk we're walking backwards through
+    double m_backStart = 0.0, m_backEnd = -1.0;
 };
 
 } // namespace ve

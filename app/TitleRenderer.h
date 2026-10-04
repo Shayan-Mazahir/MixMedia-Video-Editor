@@ -12,10 +12,11 @@
 namespace TitleRenderer {
 
 // Draws a title onto a see-through picture of the given size.
-QImage render(const TitleStyle& style, QSize size);
+// highlightWord >= 0 lights that word up (counting from 0) in style.highlight.
+QImage render(const TitleStyle& style, QSize size, int highlightWord = -1);
 
 // Same picture, saved as a PNG in the cache folder (reused if it's already there).
 // That file is what the engine layers over the video.
-QString imageFile(const TitleStyle& style, QSize size);
+QString imageFile(const TitleStyle& style, QSize size, int highlightWord = -1);
 
 } // namespace TitleRenderer

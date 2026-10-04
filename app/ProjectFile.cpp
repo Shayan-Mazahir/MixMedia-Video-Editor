@@ -17,6 +17,9 @@ namespace {
 
 constexpr int FormatVersion = 2; // 2 = tracks are saved, transitions are their own blocks
 
+// Keyframed settings, by name in the file (same order as VE_KEY_*)
+const char* const KeyNames[VE_KEY_COUNT] = { "size", "posX", "posY", "opacity", "rotation", "volume" };
+
 // We keep both the full path and one relative to the project, so moving the
 // whole folder (or opening it on another computer) still finds everything.
 QJsonObject fileRef(const QString& path, const QDir& projectDir)
@@ -37,9 +40,65 @@ QString resolve(const QJsonObject& ref, const QDir& projectDir, QStringList* mis
     return full;
 }
 
+QJsonObject styleToJson(const TitleStyle& s)
+{
+    return QJsonObject {
+        { "text", s.text },
+        { "size", s.size },
+        { "color", s.color.name(QColor::HexArgb) },
+        { "y", s.y },
+        { "box", s.box },
+        { "bold", s.bold },
+        { "font", s.font },
+        { "italic", s.italic },
+        { "align", s.align },
+        { "x", s.x },
+        { "spacing", s.spacing },
+        { "outline", s.outline },
+        { "outlineColor", s.outlineColor.name(QColor::HexArgb) },
+        { "shadow", s.shadow },
+        { "shadowColor", s.shadowColor.name(QColor::HexArgb) },
+        { "shadowDistance", s.shadowDistance },
+        { "shadowSoftness", s.shadowSoftness },
+        { "boxColor", s.boxColor.name(QColor::HexArgb) },
+        { "wordByWord", s.wordByWord },
+        { "highlight", s.highlight.name(QColor::HexArgb) },
+        { "wordsAtOnce", s.wordsAtOnce },
+    };
+}
+
+TitleStyle styleFromJson(const QJsonObject& t, const TitleStyle& defaults = {})
+{
+    TitleStyle s;
+    s.text = t["text"].toString();
+    s.size = t["size"].toDouble(defaults.size);
+    s.color = QColor(t["color"].toString(defaults.color.name(QColor::HexArgb)));
+    s.y = t["y"].toDouble(defaults.y);
+    s.box = t["box"].toBool(defaults.box);
+    s.bold = t["bold"].toBool(defaults.bold);
+    s.font = t["font"].toString();
+    s.italic = t["italic"].toBool();
+    s.align = std::clamp(t["align"].toInt(1), 0, 2);
+    s.x = t["x"].toDouble(0.5);
+    s.spacing = t["spacing"].toDouble();
+    s.outline = t["outline"].toDouble();
+    s.outlineColor = QColor(t["outlineColor"].toString("#ff000000"));
+    // Older projects: titles without a box always had a shadow
+    s.shadow = t.contains("shadow") ? t["shadow"].toBool() : !s.box;
+    s.shadowColor = QColor(t["shadowColor"].toString("#aa000000"));
+    s.shadowDistance = t["shadowDistance"].toDouble(6.0);
+    s.shadowSoftness = t["shadowSoftness"].toDouble(20.0);
+    s.boxColor = QColor(t["boxColor"].toString(defaults.boxColor.name(QColor::HexArgb)));
+    s.wordByWord = t["wordByWord"].toBool();
+    s.highlight = QColor(t["highlight"].toString(defaults.highlight.name(QColor::HexArgb)));
+    s.wordsAtOnce = std::clamp(t["wordsAtOnce"].toInt(defaults.wordsAtOnce), 1, 12);
+    return s;
+}
+
 QString kindName(TimelineClip::Kind kind)
 {
     switch (kind) {
+    case TimelineClip::Kind::Subtitle: return "subtitle";
     case TimelineClip::Kind::Title: return "title";
     case TimelineClip::Kind::Effect: return "effect";
     case TimelineClip::Kind::Transition: return "transition";
@@ -51,6 +110,8 @@ TimelineClip::Kind kindFromName(const QString& name)
 {
     if (name == "title")
         return TimelineClip::Kind::Title;
+    if (name == "subtitle")
+        return TimelineClip::Kind::Subtitle;
     if (name == "effect")
         return TimelineClip::Kind::Effect;
     if (name == "transition")
@@ -83,6 +144,26 @@ QJsonObject clipToJson(const TimelineClip& c, const QDir& dir)
         { "scale", c.scale },
         { "posX", c.posX },
         { "posY", c.posY },
+        { "crop", QJsonArray { c.cropLeft, c.cropRight, c.cropTop, c.cropBottom } },
+        { "rotation", c.rotation },
+        { "flipH", c.flipH },
+        { "flipV", c.flipV },
+        { "fill", c.fill },
+        { "reverse", c.reverse },
+        { "sound", QJsonObject {
+            { "keepPitch", c.keepPitch },
+            { "denoise", c.denoise },
+            { "duck", c.duck },
+            { "duckAmount", c.duckAmount },
+        } },
+        { "freeze", c.freeze },
+        { "greenScreen", QJsonObject {
+            { "on", c.chromaKey },
+            { "color", c.keyColor.name() },
+            { "strength", c.keyStrength },
+            { "softness", c.keySoftness },
+            { "spill", c.keySpill },
+        } },
         { "effects", QJsonObject {
             { "look", c.look },
             { "brightness", c.brightness },
@@ -102,16 +183,31 @@ QJsonObject clipToJson(const TimelineClip& c, const QDir& dir)
         } },
     };
     if (c.isTitle()) {
-        o["title"] = QJsonObject {
-            { "text", c.title.text },
-            { "size", c.title.size },
-            { "color", c.title.color.name(QColor::HexArgb) },
-            { "y", c.title.y },
-            { "box", c.title.box },
-            { "bold", c.title.bold },
-        };
+        o["title"] = styleToJson(c.title);
+    } else if (c.isSubtitle()) {
+        o["text"] = c.title.text;
+        if (c.ownStyle)
+            o["style"] = styleToJson(c.title);
+        if (!c.words.isEmpty()) {
+            QJsonArray words; // [word, start, end]
+            for (const WordTime& w : c.words)
+                words << QJsonArray { w.word, w.start, w.end };
+            o["words"] = words;
+        }
     } else if (c.kind == TimelineClip::Kind::Media) {
         o["file"] = fileRef(c.path, dir);
+    }
+    if (c.hasKeys()) {
+        // "keyframes": { "size": [[time, value], ...], ... }
+        QJsonObject keys;
+        for (int p = 0; p < VE_KEY_COUNT; ++p) {
+            QJsonArray list;
+            for (const Keyframe& f : c.keys[size_t(p)])
+                list << QJsonArray { f.time, f.value };
+            if (!list.isEmpty())
+                keys[KeyNames[p]] = list;
+        }
+        o["keyframes"] = keys;
     }
     return o;
 }
@@ -141,6 +237,30 @@ TimelineClip clipFromJson(const QJsonObject& o, const QDir& dir, QStringList* mi
     c.scale = float(o["scale"].toDouble(1.0));
     c.posX = float(o["posX"].toDouble());
     c.posY = float(o["posY"].toDouble());
+    QJsonArray crop = o["crop"].toArray();
+    if (crop.size() == 4) {
+        c.cropLeft = float(crop[0].toDouble());
+        c.cropRight = float(crop[1].toDouble());
+        c.cropTop = float(crop[2].toDouble());
+        c.cropBottom = float(crop[3].toDouble());
+    }
+    c.rotation = float(o["rotation"].toDouble());
+    c.flipH = o["flipH"].toBool();
+    c.flipV = o["flipV"].toBool();
+    c.fill = o["fill"].toBool();
+    c.reverse = o["reverse"].toBool();
+    QJsonObject sound = o["sound"].toObject();
+    c.keepPitch = sound["keepPitch"].toBool(true);
+    c.denoise = float(sound["denoise"].toDouble());
+    c.duck = sound["duck"].toBool();
+    c.duckAmount = float(sound["duckAmount"].toDouble(0.7));
+    c.freeze = o["freeze"].toBool();
+    QJsonObject key = o["greenScreen"].toObject();
+    c.chromaKey = key["on"].toBool();
+    c.keyColor = QColor(key["color"].toString("#00c83c"));
+    c.keyStrength = float(key["strength"].toDouble(0.4));
+    c.keySoftness = float(key["softness"].toDouble(0.2));
+    c.keySpill = float(key["spill"].toDouble(0.5));
     QJsonObject fx = o["effects"].toObject();
     c.look = fx["look"].toInt();
     c.brightness = float(fx["brightness"].toDouble());
@@ -159,15 +279,26 @@ TimelineClip clipFromJson(const QJsonObject& o, const QDir& dir, QStringList* mi
     c.animOut = anim["out"].toInt();
     c.animOutDuration = anim["outDuration"].toDouble(0.5);
     if (c.isTitle()) {
-        QJsonObject t = o["title"].toObject();
-        c.title.text = t["text"].toString();
-        c.title.size = t["size"].toDouble(8.0);
-        c.title.color = QColor(t["color"].toString("#ffffffff"));
-        c.title.y = t["y"].toDouble(0.82);
-        c.title.box = t["box"].toBool(true);
-        c.title.bold = t["bold"].toBool(true);
+        c.title = styleFromJson(o["title"].toObject());
+    } else if (c.isSubtitle()) {
+        c.ownStyle = o.contains("style");
+        c.title = c.ownStyle ? styleFromJson(o["style"].toObject(), TitleStyle::subtitles()) : TitleStyle::subtitles();
+        c.title.text = o["text"].toString();
+        for (const QJsonValue& v : o["words"].toArray()) {
+            QJsonArray w = v.toArray();
+            if (w.size() == 3)
+                c.words << WordTime { w[0].toString(), w[1].toDouble(), w[2].toDouble() };
+        }
     } else if (c.kind == TimelineClip::Kind::Media) {
         c.path = resolve(o["file"].toObject(), dir, missing);
+    }
+    QJsonObject keys = o["keyframes"].toObject();
+    for (int p = 0; p < VE_KEY_COUNT; ++p) {
+        for (const QJsonValue& v : keys[KeyNames[p]].toArray()) {
+            QJsonArray pair = v.toArray();
+            if (pair.size() == 2)
+                c.setKey(p, pair[0].toDouble(), float(pair[1].toDouble()));
+        }
     }
     return c;
 }
@@ -186,14 +317,21 @@ bool save(const QString& path, const Data& data, QString* error)
         clips << clipToJson(c, dir);
     QJsonArray tracks;
     for (const TimelineTrack& t : data.tracks) {
-        const char* kind = t.kind == TimelineTrack::Kind::Fx ? "fx" : t.kind == TimelineTrack::Kind::Audio ? "audio" : "video";
-        tracks << QJsonObject { { "name", t.name }, { "kind", kind } };
+        using K = TimelineTrack::Kind;
+        const char* kind = t.kind == K::Fx ? "fx" : t.kind == K::Audio ? "audio" : t.kind == K::Subtitles ? "subtitles" : "video";
+        QJsonObject track { { "name", t.name }, { "kind", kind } };
+        if (t.kind == K::Subtitles)
+            track["style"] = styleToJson(t.style);
+        tracks << track;
     }
 
     QJsonObject root {
         { "app", "MixMedia Video Editor" },
         { "version", FormatVersion },
         { "media", media },
+        { "project", QJsonObject { { "shape", data.settings.shape },
+                                   { "resolution", data.settings.resolution },
+                                   { "fps", data.settings.fps } } },
         { "timeline", QJsonObject { { "playhead", data.playhead }, { "tracks", tracks }, { "clips", clips } } },
     };
 
@@ -234,15 +372,24 @@ bool load(const QString& path, Data* data, QStringList* missing, QString* error)
     *data = {};
     for (const QJsonValue& m : root["media"].toArray())
         data->media << resolve(m.toObject(), dir, missing);
+    QJsonObject project = root["project"].toObject();
+    data->settings.shape = project["shape"].toString("auto");
+    data->settings.resolution = project["resolution"].toInt(1080);
+    data->settings.fps = project["fps"].toDouble();
     QJsonObject timeline = root["timeline"].toObject();
     data->playhead = timeline["playhead"].toDouble();
     for (const QJsonValue& v : timeline["tracks"].toArray()) {
         QJsonObject t = v.toObject();
         QString kind = t["kind"].toString();
-        data->tracks << TimelineTrack { t["name"].toString(),
-                                        kind == "fx"      ? TimelineTrack::Kind::Fx
-                                        : kind == "audio" ? TimelineTrack::Kind::Audio
-                                                          : TimelineTrack::Kind::Video };
+        using K = TimelineTrack::Kind;
+        TimelineTrack track { t["name"].toString(),
+                              kind == "fx"          ? K::Fx
+                              : kind == "audio"     ? K::Audio
+                              : kind == "subtitles" ? K::Subtitles
+                                                    : K::Video };
+        if (track.kind == K::Subtitles)
+            track.style = styleFromJson(t["style"].toObject(), TitleStyle::subtitles());
+        data->tracks << track;
     }
     for (const QJsonValue& c : timeline["clips"].toArray())
         data->clips << clipFromJson(c.toObject(), dir, missing);

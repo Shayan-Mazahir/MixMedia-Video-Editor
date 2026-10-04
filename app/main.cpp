@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Shayan Mazahir. Part of MixMedia Video Editor, see NOTICE.
 
+#include "AppSettings.h"
 #include "MainWindow.h"
 
 #include <QApplication>
@@ -51,6 +52,7 @@ int main(int argc, char** argv)
     if (!QStandardPaths::locate(QStandardPaths::ApplicationsLocation, "mixmedia.desktop").isEmpty())
         QGuiApplication::setDesktopFileName("mixmedia");
     applyDarkTheme(app);
+    AppSettings::apply(); // how much of the computer we're allowed to use
 
     // mixmedia [files...]            opens a project, or imports media
     // mixmedia --demo out.png files  puts them on the timeline, screenshots, quits

@@ -33,6 +33,16 @@ struct RenderClip {
     int animIn = 0, animOut = 0;
     double animInDuration = 0.5, animOutDuration = 0.5;
     int part = VE_PART_THROUGH; // transition blocks: on the spot, in from black or out to black
+    float cropLeft = 0, cropRight = 0, cropTop = 0, cropBottom = 0;
+    float rotation = 0;
+    bool flipH = false, flipV = false, fill = false;
+    QList<ve_keyframe> keys;
+    bool reverse = false, freeze = false;
+    bool keepPitch = true, duck = false;
+    float denoise = 0.0f, duckAmount = 0.7f;
+    bool chromaKey = false;
+    unsigned keyColor = 0x00c83c;
+    float keyStrength = 0.4f, keySoftness = 0.2f, keySpill = 0.5f;
 };
 
 // Hands the clips to an engine timeline (the engine wants plain C strings, so we keep them alive here).
@@ -75,6 +85,27 @@ inline void applyClips(ve_timeline* tl, const QList<RenderClip>& clips)
         v.anim_out = c.animOut;
         v.anim_out_duration = c.animOutDuration;
         v.transition_part = c.part;
+        v.crop_left = c.cropLeft;
+        v.crop_right = c.cropRight;
+        v.crop_top = c.cropTop;
+        v.crop_bottom = c.cropBottom;
+        v.rotation = c.rotation;
+        v.flip_h = c.flipH;
+        v.flip_v = c.flipV;
+        v.fill_frame = c.fill;
+        v.keep_pitch = c.keepPitch;
+        v.denoise = c.denoise;
+        v.duck = c.duck;
+        v.duck_amount = c.duckAmount;
+        v.reverse = c.reverse;
+        v.freeze = c.freeze;
+        v.chroma_key = c.chromaKey;
+        v.key_color = c.keyColor;
+        v.key_strength = c.keyStrength;
+        v.key_softness = c.keySoftness;
+        v.key_spill = c.keySpill;
+        v.keyframes = c.keys.constData();
+        v.keyframe_count = int(c.keys.size());
         list.push_back(v);
     }
     ve_timeline_set_clips(tl, list.data(), int(list.size()));

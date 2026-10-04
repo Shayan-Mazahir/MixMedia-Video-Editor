@@ -7,8 +7,15 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace ve {
+
+// Bits to cut off each edge of a frame, as fractions of the picture (0.1 = a tenth)
+struct FrameCrop {
+    float left = 0, right = 0, top = 0, bottom = 0;
+    bool any() const { return left > 0 || right > 0 || top > 0 || bottom > 0; }
+};
 
 // Pulls frames out of one video file. Times are in seconds from the start of the file.
 class VideoReader {
@@ -32,11 +39,23 @@ public:
     // (great for thumbnails). Returns nullptr if nothing could be decoded.
     const AVFrame* frameAt(double sec, bool fast = false);
 
-    // Scales a frame to exactly w x h RGBA (or BGRA, the order most screens use).
-    bool scale(const AVFrame* frame, int w, int h, uint8_t* dst, int dstStride, bool bgra = false);
+    // Bits to cut off each edge, as fractions of the picture (0.1 = a tenth)
+    struct Crop {
+        float left = 0, right = 0, top = 0, bottom = 0;
+        bool any() const { return left > 0 || right > 0 || top > 0 || bottom > 0; }
+    };
+
+    // Scales a frame to exactly w x h RGBA (or BGRA, the order most screens use),
+    // cropping it first if asked.
+    bool scale(const AVFrame* frame, int w, int h, uint8_t* dst, int dstStride, bool bgra = false,
+               const FrameCrop& crop = FrameCrop());
 
     // Converts a frame into a new w x h YUV 4:2:0 frame (HD colours), allocating `out`'s buffers.
     bool toYuv420(const AVFrame* frame, int w, int h, AVFrame* out);
+
+    // Playing backwards: decoders only go forwards, so this grabs about a second of frames at a
+    // time and hands them out from the end. Much quicker than seeking for every single frame.
+    void setBackwards(bool backwards);
 
     // Quicker, slightly rougher scaling. Fine for a small preview, not for export.
     void setFastScaling(bool fast) { m_fastScaling = fast; }
@@ -46,6 +65,7 @@ public:
 
 private:
     void seekTo(double sec);
+    const AVFrame* backwardsFrameAt(double sec);
     bool decodeNext();
     double frameStart(const AVFrame* f) const;
     double frameEnd(const AVFrame* f) const;
@@ -66,6 +86,9 @@ private:
     FramePtr m_frame; // the one we're currently showing
     FramePtr m_next;
     FramePtr m_inMemory; // copy of a card frame, for when the CPU needs to look at it
+    FramePtr m_cropped;  // the same frame with its edges trimmed (shares the pixels)
+    bool m_backwards = false;
+    std::vector<FramePtr> m_window; // a second or so of frames, in order (when going backwards)
     bool m_haveFrame = false;
     bool m_eof = false;
     bool m_flushed = false;

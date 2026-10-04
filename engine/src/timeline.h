@@ -3,11 +3,14 @@
 
 #pragma once
 
+#include "audio_fx.h"
 #include "audio_reader.h"
 #include "effects.h"
 #include "video_reader.h"
 
 #include <algorithm>
+#include <array>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -18,7 +21,15 @@ namespace ve {
 enum class Transition { None, Dissolve, FadeBlack, WipeLeft, WipeRight, WipeUp, WipeDown, SlideLeft, SlideRight, Zoom, Count };
 
 // How a clip arrives or leaves
-enum class Anim { None, Fade, SlideLeft, SlideRight, SlideUp, SlideDown, Zoom, Wipe, Count };
+enum class Anim { None, Fade, SlideLeft, SlideRight, SlideUp, SlideDown, Zoom, Wipe, Rise, Count };
+
+// The settings that can change over time with keyframes (same order as VE_KEY_*)
+enum class Param { Scale, PosX, PosY, Opacity, Rotation, Volume, Count };
+
+struct Keyframe {
+    double time;  // seconds from the start of the clip
+    float value;
+};
 
 struct Clip {
     // Media = a video/picture/sound file. Adjustment = no file, its effects apply to
@@ -48,6 +59,49 @@ struct Clip {
     float posX = 0.0f;    // shift, as a fraction of the frame width (0 = centred)
     float posY = 0.0f;
 
+    // Crop (fractions cut off each edge), turning and mirroring
+    float cropLeft = 0, cropRight = 0, cropTop = 0, cropBottom = 0;
+    float rotation = 0; // degrees, clockwise
+    bool flipH = false, flipV = false;
+    bool fill = false;  // cover the whole frame (cutting off what hangs over) instead of fitting inside it
+    bool reverse = false; // plays backwards
+    bool freeze = false;  // holds the frame at `in` the whole time
+    ChromaKey key;        // green screen
+
+    // Sound
+    bool keepPitch = false;   // speed changes keep the pitch (voices don't go chipmunk)
+    float denoise = 0.0f;     // 0..1, how much background noise to take out
+    bool duck = false;        // gets quieter while there's talking on other clips (for music)
+    float duckAmount = 0.7f;  // 0..1, how much quieter
+    bool cropped() const { return cropLeft > 0 || cropRight > 0 || cropTop > 0 || cropBottom > 0; }
+    bool turned() const { return rotation != 0 || flipH || flipV || !keys[size_t(Param::Rotation)].empty(); }
+
+    // Keyframes for each Param, in time order. None = the setting just stays put.
+    std::array<std::vector<Keyframe>, size_t(Param::Count)> keys;
+    bool animated() const
+    {
+        return std::any_of(keys.begin(), keys.end(), [](const auto& k) { return !k.empty(); });
+    }
+    // The setting's value at timeline time t: glides smoothly from one keyframe to the next
+    // (`still` = the value when it has no keyframes)
+    float at(Param p, double t, float still) const
+    {
+        const std::vector<Keyframe>& k = keys[size_t(p)];
+        if (k.empty())
+            return still;
+        double local = t - start;
+        if (local <= k.front().time)
+            return k.front().value;
+        if (local >= k.back().time)
+            return k.back().value;
+        auto next = std::upper_bound(k.begin(), k.end(), local, [](double v, const Keyframe& f) { return v < f.time; });
+        const Keyframe& b = *next;
+        const Keyframe& a = *(next - 1);
+        double p01 = b.time > a.time ? (local - a.time) / (b.time - a.time) : 1.0;
+        p01 = p01 * p01 * (3 - 2 * p01); // ease in and out
+        return float(a.value + (b.value - a.value) * p01);
+    }
+
     Effects effects;
 
     // Transition from the clip that ends right where this one starts (same layer)
@@ -69,12 +123,21 @@ struct Clip {
     bool activeAt(double t) const { return t >= start && t < end(); }
 
     // Which moment of the source file is on screen at timeline time t
-    double sourceTime(double t) const { return in + (t - start) * speed; }
+    double sourceTime(double t) const
+    {
+        if (freeze)
+            return in;
+        if (reverse) // from the end of the bit it uses, back to the start
+            return in + std::max(0.0, (end() - t) * speed - 1e-4);
+        return in + (t - start) * speed;
+    }
 
     // Nothing fancy going on (so export can take its fast lane)
     bool plain() const
     {
         return kind == Kind::Media && !effects.any() && opacity >= 1.0f && scale == 1.0f && posX == 0.0f && posY == 0.0f
+               && !cropped() && !turned() && !fill && !animated() && !reverse && !freeze && !key.on
+               && denoise <= 0.0f && !duck
                && transition == Transition::None && animIn == Anim::None && animOut == Anim::None
                && preRoll == 0.0 && postRoll == 0.0 && blendInTo <= blendInFrom && blendOutTo <= blendOutFrom;
     }
@@ -143,6 +206,10 @@ private:
         std::vector<uint8_t> still;
         int stillW = 0, stillH = 0;
         bool stillBgra = false;
+        float stillCrop[4] = {};
+        // Sound effects that remember where they were between calls
+        std::unique_ptr<TimeStretcher> stretcher;
+        std::unique_ptr<Denoiser> denoiser;
     };
 
     VideoReader* videoFor(Slot& s, double t);
@@ -156,9 +223,13 @@ private:
     };
     void drawSlot(Slot& s, double t, int w, int h, uint8_t* canvas, bool bgra, DrawMods mods);
     void drawTransition(Slot& a, Slot& b, double t, int w, int h, uint8_t* canvas, bool bgra);
+    // Paints a fw x fh picture turned/mirrored around (cx, cy), only inside the box
+    static void drawTurned(uint8_t* canvas, int w, int h, const uint8_t* src, int fw, int fh, double cx, double cy,
+                           double rotation, const Clip& c, double opacity, int boxX0, int boxY0, int boxX1, int boxY1);
     void applyAdjustment(const Clip& c, double t, int w, int h, uint8_t* canvas, bool bgra);
     void applyTransitionBlock(const Clip& c, double t, int w, int h, uint8_t* canvas);
     void linkTransitions();
+    void followTalking(double t, const float* mix, int frames);
 
     void closeIdleVideo(double t);
     void closeIdleAudio(double t);
@@ -175,6 +246,12 @@ private:
     EffectsScratch m_fx;
     std::vector<float> m_mix;
     std::vector<float> m_speedBuf; // sound for sped-up/slowed-down clips
+    std::map<std::string, NoiseProfile> m_noise; // learnt once per bit of file
+    const NoiseProfile& noiseFor(const Clip& c);
+    // Ducking: how much talking there is right now (followed smoothly from one call to the next)
+    std::vector<float> m_talking;
+    float m_talkLevel = 0.0f, m_talkPresence = 0.0f;
+    double m_talkNext = -1.0;
 };
 
 } // namespace ve

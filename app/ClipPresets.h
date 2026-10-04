@@ -76,7 +76,8 @@ inline QList<TimelineClip> titlePresets()
     title.title.size = 12;
     title.title.y = 0.5;
     title.title.box = false;
-    title.animIn = VE_ANIM_FADE;
+    title.title.shadow = true;
+    title.animIn = VE_ANIM_RISE;
     title.animOut = VE_ANIM_FADE;
 
     TimelineClip lower = make("Lower third", "Name\nWhat they do");
@@ -94,6 +95,8 @@ inline QList<TimelineClip> titlePresets()
     big.title.size = 22;
     big.title.y = 0.5;
     big.title.box = false;
+    big.title.shadow = true;
+    big.title.outline = 6;
     big.title.color = QColor(0xff, 0xd2, 0x3f);
     big.animIn = VE_ANIM_ZOOM;
 
@@ -104,5 +107,57 @@ inline QList<TimelineClip> titlePresets()
     reveal.animInDuration = 1.0;
     reveal.animOut = VE_ANIM_FADE;
 
-    return { title, lower, subtitle, big, reveal };
+    TimelineClip outlined = make("Outlined", "Outlined");
+    outlined.title.size = 12;
+    outlined.title.y = 0.5;
+    outlined.title.box = false;
+    outlined.title.outline = 8;
+    outlined.animIn = VE_ANIM_ZOOM;
+    outlined.animOut = VE_ANIM_FADE;
+
+    TimelineClip neon = make("Neon glow", "NEON");
+    neon.title.size = 14;
+    neon.title.y = 0.5;
+    neon.title.box = false;
+    neon.title.color = QColor(0xe8, 0xff, 0xff);
+    neon.title.shadow = true;
+    neon.title.shadowColor = QColor(0x2f, 0xe6, 0xff, 230); // no distance + a bright colour = a glow
+    neon.title.shadowDistance = 0;
+    neon.title.shadowSoftness = 60;
+    neon.animIn = VE_ANIM_FADE;
+    neon.animOut = VE_ANIM_FADE;
+
+    TimelineClip caption = make("Caption box", "Something worth reading");
+    caption.title.size = 5;
+    caption.title.y = 0.86;
+    caption.title.color = Qt::black;
+    caption.title.boxColor = QColor(0xff, 0xd2, 0x3f, 235);
+    caption.animIn = VE_ANIM_RISE;
+    caption.animOut = VE_ANIM_FADE;
+
+    TimelineClip corner = make("Corner tag", "@yourname");
+    corner.title.size = 4;
+    corner.title.y = 0.08;
+    corner.title.x = 0.04;
+    corner.title.align = 0;
+    corner.title.boxColor = QColor(0x2f, 0xc6, 0xb4, 220);
+    corner.title.color = Qt::black;
+    corner.animIn = VE_ANIM_SLIDE_LEFT;
+    corner.animOut = VE_ANIM_SLIDE_LEFT;
+
+    TimelineClip cinematic = make("Cinematic", "THE BEGINNING");
+    cinematic.title.size = 7;
+    cinematic.title.y = 0.5;
+    cinematic.title.box = false;
+    cinematic.title.bold = false;
+    cinematic.title.spacing = 60;
+    cinematic.title.shadow = true;
+    cinematic.title.shadowSoftness = 50;
+    cinematic.title.shadowDistance = 3;
+    cinematic.animIn = VE_ANIM_FADE;
+    cinematic.animInDuration = 1.5;
+    cinematic.animOut = VE_ANIM_FADE;
+    cinematic.animOutDuration = 1.5;
+
+    return { title, lower, subtitle, big, reveal, outlined, neon, caption, corner, cinematic };
 }

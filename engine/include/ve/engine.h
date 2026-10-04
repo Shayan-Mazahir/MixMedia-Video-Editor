@@ -78,6 +78,24 @@ int ve_reader_frame(ve_reader* reader, double sec, int fast, int max_w, int max_
 
 /* ---- Timelines ---- */
 
+/* A setting's value at one moment of a clip. In between keyframes it glides smoothly. */
+typedef struct ve_keyframe {
+    int param;    /* one of VE_KEY_* */
+    double time;  /* seconds from the start of the clip */
+    float value;  /* size: 1 = normal; position: fraction of the frame; opacity: 0..1;
+                     rotation: degrees clockwise; volume: 1 = as is */
+} ve_keyframe;
+
+enum {
+    VE_KEY_SIZE = 0,
+    VE_KEY_POS_X,
+    VE_KEY_POS_Y,
+    VE_KEY_OPACITY,
+    VE_KEY_ROTATION,
+    VE_KEY_VOLUME,
+    VE_KEY_COUNT
+};
+
 typedef struct ve_clip {
     int kind;        /* VE_CLIP_MEDIA (a file), VE_CLIP_ADJUSTMENT (effects over everything below, no file)
                         or VE_CLIP_TRANSITION (a transition played on everything below, no file) */
@@ -122,6 +140,32 @@ typedef struct ve_clip {
 
     /* VE_CLIP_TRANSITION blocks only: one of VE_PART_* */
     int transition_part;
+
+    /* Crop (fraction cut off each edge, 0..0.95), turning and mirroring */
+    float crop_left, crop_right, crop_top, crop_bottom;
+    float rotation;      /* degrees, clockwise */
+    int flip_h, flip_v;  /* 1 = mirrored left-right / upside down */
+    int fill_frame;      /* 1 = cover the whole frame (cutting off what hangs over), 0 = fit inside it */
+
+    int reverse;         /* 1 = plays backwards */
+    int freeze;          /* 1 = holds the frame at `in` the whole time */
+
+    /* Green screen: makes everything close to key_color see-through */
+    int chroma_key;               /* 1 = on */
+    unsigned int key_color;       /* 0xRRGGBB */
+    float key_strength;           /* 0..1, how far from that colour still counts */
+    float key_softness;           /* 0..1, how gradual the edge is */
+    float key_spill;              /* 0..1, how much of its glow to take off the subject */
+
+    /* Sound */
+    int keep_pitch;      /* 1 = speed changes don't change the pitch */
+    float denoise;       /* 0..1, how much steady background noise (hum, hiss) to take out */
+    int duck;            /* 1 = gets quieter while other clips have talking in them (for music) */
+    float duck_amount;   /* 0..1, how much quieter (0 counts as 0.7) */
+
+    /* Settings that change over time (any order). Copied, so they only need to live during the call. */
+    const ve_keyframe* keyframes;
+    int keyframe_count;
 } ve_clip;
 
 enum {
@@ -147,6 +191,7 @@ enum {
     VE_ANIM_SLIDE_DOWN,
     VE_ANIM_ZOOM,
     VE_ANIM_WIPE,
+    VE_ANIM_RISE, /* floats up a little while fading in (drifts down going out) */
     VE_ANIM_COUNT
 };
 
@@ -210,6 +255,12 @@ int ve_apply_effects(const ve_clip* settings, uint8_t* rgba, int w, int h);
  */
 int ve_timeline_can_copy(ve_timeline* tl, char* why, int why_size);
 
+/* One subtitle line, for exporting as a track people can switch on */
+typedef struct ve_subtitle {
+    double start, end;  /* seconds */
+    const char* text;   /* UTF-8, \n for a new line */
+} ve_subtitle;
+
 typedef struct ve_export_settings {
     const char* path; /* e.g. "my video.mp4" */
     int width;
@@ -220,6 +271,9 @@ typedef struct ve_export_settings {
     int copy_only;      /* 1 = instant export: copy the video as-is, no re-encoding.
                            Only works if ve_timeline_can_copy says so. Size/fps/crf are ignored. */
     int format;         /* one of VE_FORMAT_* (0 = MP4) */
+    const ve_subtitle* subtitles; /* MP4 only: added as a subtitle track players can switch on */
+    int subtitle_count;
+    const char* subtitle_language; /* e.g. "eng" (3 letters), or null */
 
     char encoder_used[32]; /* filled in by ve_export, e.g. "h264_vaapi" or "libx264" */
 } ve_export_settings;
@@ -231,6 +285,16 @@ enum {
     VE_FORMAT_M4A      /* sound only (AAC) */
 };
 
+/* How loud the sound in [from, from + length) of a file is: average (RMS) and peak, in dB
+   (0 = as loud as it can go). Listens to slices across it, so it's quick. Returns VE_OK or an error. */
+int ve_measure_loudness(const char* path, double from, double length, float* rms_db, float* peak_db);
+
+/* How many CPU threads the engine may use for decoding, effects and exporting.
+   0 = decide automatically (the default). Applies to everything started afterwards. */
+void ve_set_thread_limit(int threads);
+/* How many CPU threads this computer has */
+int ve_cpu_threads(void);
+
 /* 1 if this build can export to that format (MP3 needs FFmpeg built with LAME) */
 int ve_export_format_available(int format);
 
@@ -239,6 +303,33 @@ typedef int (*ve_progress_fn)(double done, void* user);
 
 int ve_export(ve_timeline* tl, ve_export_settings* settings,
               ve_progress_fn progress, void* user);
+
+/* ---- Auto-captions (whisper.cpp) ---- */
+
+/* 1 if this build has them */
+int ve_captions_available(void);
+
+typedef struct ve_caption_settings {
+    const char* model_path; /* a whisper ggml model file, e.g. ggml-base.bin */
+    const char* language;   /* "en", "fr", ... or "auto" to work it out */
+    int translate;          /* 1 = write it in English, whatever's being spoken */
+    int threads;            /* CPU threads, 0 = the thread limit (or all of them) */
+    int use_gpu;            /* 1 = use the graphics card if this build can */
+} ve_caption_settings;
+
+typedef struct ve_caption_word {
+    double start, end;      /* seconds on the timeline */
+    const char* text;       /* UTF-8, only valid during the call */
+    int starts_sentence;    /* 1 = whisper started a new bit of speech here */
+} ve_caption_word;
+typedef void (*ve_caption_word_fn)(const ve_caption_word* word, void* user);
+
+/* Listens to the timeline's sound and calls `word` for every word it hears, in order.
+   Slow (it's doing a lot of maths), so run it off the main thread. `progress` can cancel it.
+   Returns VE_OK, VE_ERR_OPEN (couldn't load the model), VE_ERR_CANCELLED, ... */
+int ve_auto_captions(ve_timeline* tl, const ve_caption_settings* settings, ve_caption_word_fn word,
+                     ve_progress_fn progress, void* user);
+
 
 #ifdef __cplusplus
 }

@@ -4,14 +4,21 @@
 // Pretends to be a mouse and keyboard and makes sure the timeline edits do what they should.
 // Run with: QT_QPA_PLATFORM=offscreen ./build/tests/timeline_test
 
+#include "AutoCaptions.h"
+#include "ClipInspector.h"
 #include "ClipPresets.h"
 #include "MainWindow.h"
 #include "NumberSlider.h"
+#include "PreviewWidget.h"
+#include "SubtitleFile.h"
+#include "SubtitlePanel.h"
+#include "TitleRenderer.h"
 #include "ProjectFile.h"
 #include "TimelineWidget.h"
 
 #include <QApplication>
 #include <QDir>
+#include <QRegularExpression>
 #include <QDoubleSpinBox>
 #include <QFile>
 #include <QMessageBox>
@@ -24,7 +31,9 @@
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTableWidget>
 #include <QTimer>
+#include <QToolButton>
 
 namespace {
 
@@ -266,7 +275,7 @@ private slots:
         QCOMPARE(tl->selectedIndex(), 1);
 
         // The engine gets whatever picture file we make for it
-        QList<RenderClip> r = tl->renderClips([](const TimelineClip&) { return QStringLiteral("/tmp/title.png"); });
+        QList<RenderClip> r = tl->renderClips([](const TitleStyle&, int) { return QStringLiteral("/tmp/title.png"); });
         QCOMPARE(r[1].path, QStringLiteral("/tmp/title.png"));
         QVERIFY(r[1].layer > r[0].layer);
         QVERIFY(!r[1].audio);
@@ -728,6 +737,601 @@ private slots:
         QList<RenderClip> r = tl->renderClips();
         QCOMPARE(r.size(), 2);
         QVERIFY(r[1].layer > r[0].layer); // Video 2 draws over Video 1
+    }
+
+    void projectShapesComeOutTheRightSize()
+    {
+        ProjectSettings s;
+        QCOMPARE(s.sizeFor({ 1280, 720 }), QSize(1280, 720)); // "auto" = whatever the first video is
+        s.shape = "16:9";
+        QCOMPARE(s.sizeFor({ 1280, 720 }), QSize(1920, 1080));
+        s.shape = "9:16";
+        QCOMPARE(s.sizeFor({}), QSize(1080, 1920));
+        s.shape = "1:1";
+        s.resolution = 720;
+        QCOMPARE(s.sizeFor({}), QSize(720, 720));
+        s.shape = "4:5";
+        s.resolution = 1080;
+        QCOMPARE(s.sizeFor({}), QSize(1080, 1350));
+    }
+
+    void cropAndRotateGetSaved()
+    {
+        TimelineClip c = fakeVideo(5);
+        c.track = V1;
+        c.cropLeft = 0.1f;
+        c.cropBottom = 0.25f;
+        c.rotation = -90.0f;
+        c.flipH = true;
+        c.fill = true;
+        ProjectFile::Data out;
+        out.clips = { c };
+        out.tracks = TimelineWidget::defaultTracks();
+        out.settings.shape = "9:16";
+        out.settings.fps = 60;
+        QTemporaryDir dir;
+        QString error;
+        QVERIFY(ProjectFile::save(dir.filePath("p.mixmedia"), out, &error));
+        ProjectFile::Data in;
+        QVERIFY(ProjectFile::load(dir.filePath("p.mixmedia"), &in, nullptr, &error));
+        const TimelineClip& back = in.clips.first();
+        QCOMPARE(back.cropLeft, 0.1f);
+        QCOMPARE(back.cropBottom, 0.25f);
+        QCOMPARE(back.rotation, -90.0f);
+        QVERIFY(back.flipH && !back.flipV && back.fill);
+        QCOMPARE(in.settings, out.settings);
+
+        // ...and they reach the engine
+        tl->setClips(in.clips, in.tracks);
+        const RenderClip r = tl->renderClips().first();
+        QCOMPARE(r.cropLeft, 0.1f);
+        QCOMPARE(r.rotation, -90.0f);
+        QVERIFY(r.flipH && r.fill);
+    }
+
+    void keyframesGlideBetweenValues()
+    {
+        TimelineClip c = fakeVideo(10);
+        c.scale = 0.5f;
+        QCOMPARE(c.valueAt(VE_KEY_SIZE, 3.0), 0.5f); // no keyframes: the normal value
+        c.setKey(VE_KEY_SIZE, 2.0, 1.0f);
+        c.setKey(VE_KEY_SIZE, 6.0, 2.0f);
+        QCOMPARE(c.valueAt(VE_KEY_SIZE, 0.0), 1.0f); // before the first: holds it
+        QCOMPARE(c.valueAt(VE_KEY_SIZE, 4.0), 1.5f); // halfway
+        QCOMPARE(c.valueAt(VE_KEY_SIZE, 9.0), 2.0f); // after the last: holds it
+        QVERIFY(c.valueAt(VE_KEY_SIZE, 2.5) < 1.125f); // eases in, so slower than a straight line at first
+        c.setKey(VE_KEY_SIZE, 6.005, 3.0f); // close enough to the one at 6s: changes it
+        QCOMPARE(c.keys[VE_KEY_SIZE].size(), 2);
+        QCOMPARE(c.valueAt(VE_KEY_SIZE, 6.0), 3.0f);
+    }
+
+    void keyframesSurviveEdits()
+    {
+        TimelineClip c = fakeVideo(10);
+        c.track = V1;
+        c.setKey(VE_KEY_POS_X, 2.0, -0.5f);
+        c.setKey(VE_KEY_POS_X, 8.0, 0.5f);
+        tl->setClips({ c }, TimelineWidget::defaultTracks());
+        const float midway = clip(0).valueAt(VE_KEY_POS_X, 5.0);
+
+        // Split in the middle: the right half carries on exactly where the left one was
+        tl->selectClip(0);
+        tl->setPlayhead(5.0);
+        tl->splitAtPlayhead();
+        QCOMPARE(clip(1).valueAt(VE_KEY_POS_X, 0.0), midway);
+        QCOMPARE(clip(1).valueAt(VE_KEY_POS_X, 3.0), 0.5f); // the 8s keyframe, now 3s into the right half
+
+        // Twice as fast: keyframes come twice as soon
+        tl->setClipSpeed(0, 2.0);
+        QCOMPARE(clip(0).keys[VE_KEY_POS_X].first().time, 1.0);
+
+        // Saved, opened, and handed to the engine
+        QTemporaryDir dir;
+        ProjectFile::Data out;
+        out.clips = tl->clips();
+        out.tracks = tl->tracks();
+        QString error;
+        QVERIFY(ProjectFile::save(dir.filePath("k.mixmedia"), out, &error));
+        ProjectFile::Data in;
+        QVERIFY(ProjectFile::load(dir.filePath("k.mixmedia"), &in, nullptr, &error));
+        QCOMPARE(in.clips[1].keys[VE_KEY_POS_X], clip(1).keys[VE_KEY_POS_X]);
+        QCOMPARE(tl->renderClips()[1].keys.size(), 2);
+    }
+
+    void keyframeButtonsInProperties()
+    {
+        ClipInspector inspector;
+        inspector.resize(340, 2000);
+        inspector.show();
+        TimelineClip c = fakeVideo(10);
+        c.start = 20.0;
+        QSignalSpy edited(&inspector, &ClipInspector::edited);
+        auto latest = [&] { return edited.last().at(1).value<TimelineClip>(); };
+        auto sizeRow = [&] {
+            // The ◇ next to Size (the first keyframe button)
+            for (QToolButton* b : inspector.findChildren<QToolButton*>())
+                if (b->text() == "◇" || b->text() == "◆")
+                    return b;
+            return static_cast<QToolButton*>(nullptr);
+        };
+
+        inspector.setPlayhead(22.0);
+        inspector.showClip(0, c);
+        sizeRow()->click(); // ◆ at 2s into the clip
+        QCOMPARE(edited.size(), 1);
+        c = latest();
+        QCOMPARE(c.keys[VE_KEY_SIZE].size(), 1);
+        QCOMPARE(c.keys[VE_KEY_SIZE].first().time, 2.0);
+
+        // Somewhere else, drag the size slider: that makes a second keyframe there
+        inspector.setPlayhead(26.0);
+        inspector.showClip(0, c);
+        auto* sizeSlider = inspector.findChildren<NumberSlider*>().at(0);
+        for (NumberSlider* s : inspector.findChildren<NumberSlider*>())
+            if (s->parentWidget() == sizeRow()->parentWidget())
+                sizeSlider = s;
+        sizeSlider->setValue(250);
+        emit sizeSlider->valueChanged(250);
+        c = latest();
+        QCOMPARE(c.keys[VE_KEY_SIZE].size(), 2);
+        QCOMPARE(c.valueAt(VE_KEY_SIZE, 6.0), 2.5f);
+        QCOMPARE(c.scale, 1.0f); // the normal value stays put
+
+        // Zoom into a spot at the playhead: in, stay, out
+        inspector.setSpot(QPointF(-0.25, 0.1));
+        inspector.showClip(0, c);
+        for (QPushButton* b : inspector.findChildren<QPushButton*>())
+            if (b->text() == "Add")
+                b->click();
+        c = latest();
+        QCOMPARE(c.keys[VE_KEY_SIZE].size(), 4);
+        QCOMPARE(c.keys[VE_KEY_SIZE].first().time, 6.0);
+        QVERIFY(c.keys[VE_KEY_POS_X][1].value > 0); // spot on the left: the picture moves right
+        QVERIFY(c.keys[VE_KEY_POS_Y][1].value < 0);
+    }
+
+    void pickingASpotOnThePreview()
+    {
+        PreviewWidget preview;
+        preview.resize(400, 300); // a 16:9 picture: 400 x 225, with bars above and below
+        preview.show();
+        QSignalSpy picked(&preview, &PreviewWidget::picked);
+        QTest::mouseClick(&preview, Qt::LeftButton, {}, QPoint(100, 150));
+        QCOMPARE(picked.size(), 0); // not picking yet: clicks do nothing
+        preview.pickSpot();
+        QTest::mouseClick(&preview, Qt::LeftButton, {}, QPoint(200, 10));
+        QCOMPARE(picked.size(), 0); // in the bars, off the picture: still waiting
+        QTest::mouseClick(&preview, Qt::LeftButton, {}, QPoint(100, 150));
+        QCOMPARE(picked.size(), 1);
+        QPointF spot = picked.first().first().toPointF();
+        QVERIFY(std::abs(spot.x() - (-0.25)) < 0.01); // a quarter of the way in from the left
+        QVERIFY(std::abs(spot.y()) < 0.01);           // halfway down
+    }
+
+    void ctrlClickAndMoveTogether()
+    {
+        tl->appendClips({ fakeVideo(3) }); // 0-10s and 10-13s on Video 1
+        tl->selectClip(-1); // (adding a clip selects it)
+        QTest::mouseClick(tl, Qt::LeftButton, Qt::ControlModifier, { xAt(5.0), trackY(V1) });
+        QTest::mouseClick(tl, Qt::LeftButton, Qt::ControlModifier, { xAt(11.5), trackY(V1) });
+        QCOMPARE(tl->selectedIndexes().size(), 2);
+
+        drag(tl, { xAt(5.0), trackY(V1) }, { xAt(7.0), trackY(V1) }); // grab one, both go
+        QCOMPARE(clip(0).start, 2.0);
+        QCOMPARE(clip(1).start, 12.0);
+        QCOMPARE(tl->selectedIndexes().size(), 2); // still both selected
+
+        QTest::mouseClick(tl, Qt::LeftButton, Qt::ControlModifier, { xAt(13.5), trackY(V1) }); // Ctrl+click again: out
+        QCOMPARE(tl->selectedIndexes(), QList<int> { 0 });
+        tl->undo();
+        QCOMPARE(clip(0).start, 0.0); // one undo step for the whole move
+        QCOMPARE(clip(1).start, 10.0);
+    }
+
+    void boxSelectAndDeleteSeveral()
+    {
+        tl->appendClips({ fakeVideo(3) });
+        tl->setPlayhead(2.0);
+        tl->addTitle(); // on an FX track, 2-7s
+        // A box from empty space on Audio 2 up to Video 1, across both video clips (not up to the title)
+        drag(tl, { xAt(1.0), trackY(A2) }, { xAt(11.0), trackY(V1) });
+        QList<int> picked = tl->selectedIndexes();
+        std::sort(picked.begin(), picked.end());
+        QCOMPARE(picked, (QList<int> { 0, 1 }));
+
+        tl->deleteSelected();
+        QCOMPARE(tl->clips().size(), 1); // just the title left
+        QVERIFY(tl->clips().first().isTitle());
+        tl->undo();
+        QCOMPARE(tl->clips().size(), 3); // and back in one step
+    }
+
+    void copyAndPaste()
+    {
+        tl->selectClip(0);
+        tl->copySelected();
+        tl->setPlayhead(15.0);
+        tl->paste();
+        QCOMPARE(tl->clips().size(), 2);
+        QCOMPARE(clip(1).start, 15.0);
+        QCOMPARE(clip(1).track, V1);
+        QCOMPARE(tl->selectedIndexes(), QList<int> { 1 });
+
+        // Pasting where something already is: it slides along to the next free spot
+        tl->setPlayhead(5.0);
+        tl->paste();
+        QCOMPARE(tl->clips().size(), 3);
+        QCOMPARE(clip(2).start, 25.0); // after the one pasted at 15s
+        tl->undo();
+        QCOMPARE(tl->clips().size(), 2);
+    }
+
+    void transitionsStickToTheirClip()
+    {
+        tl->setPlayhead(5.0);
+        tl->splitAtPlayhead();
+        tl->setTransition(1, VE_TRANSITION_DISSOLVE); // the second half slides back to 4s
+        const int block = int(tl->clips().size()) - 1;
+        QCOMPARE(clip(block).start, 4.0);
+
+        // Drag the clip after the cut away: the transition goes with it (now bringing it in from black)
+        drag(tl, { xAt(7.0), trackY(V1) }, { xAt(10.0), trackY(V1) });
+        QCOMPARE(clip(1).start, 7.0);
+        QCOMPARE(clip(block).start, 7.0);
+        QCOMPARE(tl->transitionPart(clip(block)), int(VE_PART_IN));
+
+        // Deleting a clip takes its transitions with it
+        tl->undo();
+        tl->selectClip(0);
+        tl->deleteSelected();
+        QVERIFY(std::none_of(tl->clips().begin(), tl->clips().end(), [](const TimelineClip& c) { return c.isTransition(); }));
+    }
+
+    void freezeFrameHoldsAMoment()
+    {
+        tl->setPlayhead(4.0);
+        tl->freezeFrame(2.0);
+        QCOMPARE(tl->clips().size(), 3);
+        const TimelineClip& still = tl->clips().last();
+        QVERIFY(still.freeze);
+        QCOMPARE(still.start, 4.0);
+        QCOMPARE(still.duration, 2.0);
+        QCOMPARE(still.in, 4.0); // the frame that was under the playhead
+        QVERIFY(!still.playsAudio());
+        QCOMPARE(clip(0).duration, 4.0); // before it
+        QCOMPARE(clip(1).start, 6.0);    // the rest, pushed along
+        QCOMPARE(clip(1).in, 4.0);
+        QCOMPARE(tl->duration(), 12.0);
+        QVERIFY(!tl->renderClips().last().audio);
+        tl->undo();
+        QCOMPARE(tl->clips().size(), 1); // one step
+    }
+
+    void backwardsClipsSplitTheRightWay()
+    {
+        tl->setReverse(0, true);
+        QVERIFY(clip(0).reverse);
+        tl->selectClip(0);
+        tl->setPlayhead(4.0);
+        tl->splitAtPlayhead();
+        // Played backwards, the first 4s of the timeline show the last 4s of the file
+        QCOMPARE(clip(0).in, 6.0);
+        QCOMPARE(clip(0).duration, 4.0);
+        QCOMPARE(clip(1).in, 0.0);
+        QCOMPARE(clip(1).duration, 6.0);
+        QVERIFY(clip(1).reverse);
+    }
+
+    void greenScreenAndFriendsGetSaved()
+    {
+        TimelineClip c = fakeVideo(5);
+        c.track = V1;
+        c.reverse = true;
+        c.chromaKey = true;
+        c.keyColor = QColor(10, 20, 250);
+        c.keyStrength = 0.33f;
+        TimelineClip f = fakeVideo(5);
+        f.track = V1;
+        f.start = 5.0;
+        f.freeze = true;
+        f.in = 2.5;
+        ProjectFile::Data out;
+        out.clips = { c, f };
+        out.tracks = TimelineWidget::defaultTracks();
+        QTemporaryDir dir;
+        QString error;
+        QVERIFY(ProjectFile::save(dir.filePath("g.mixmedia"), out, &error));
+        ProjectFile::Data in;
+        QVERIFY(ProjectFile::load(dir.filePath("g.mixmedia"), &in, nullptr, &error));
+        QVERIFY(in.clips[0].reverse && in.clips[0].chromaKey);
+        QCOMPARE(in.clips[0].keyColor, QColor(10, 20, 250));
+        QCOMPARE(in.clips[0].keyStrength, 0.33f);
+        QVERIFY(in.clips[1].freeze);
+        QCOMPARE(in.clips[1].in, 2.5);
+        tl->setClips(in.clips, in.tracks);
+        QList<RenderClip> r = tl->renderClips();
+        QVERIFY(r[0].reverse && r[0].chromaKey);
+        QCOMPARE(r[0].keyColor, 0x0a14faU);
+        QVERIFY(r[1].freeze && !r[1].audio);
+    }
+
+    void pickingAColourOnThePreview()
+    {
+        PreviewWidget preview;
+        preview.resize(400, 225);
+        preview.show();
+        QImage frame(160, 90, QImage::Format_RGB32);
+        frame.fill(QColor(0, 177, 64));
+        preview.setFrame(frame);
+        QSignalSpy picked(&preview, &PreviewWidget::colorPicked);
+        preview.pickColor();
+        QTest::mouseClick(&preview, Qt::LeftButton, {}, QPoint(200, 110));
+        QCOMPARE(picked.size(), 1);
+        QCOMPARE(picked.first().first().value<QColor>(), QColor(0, 177, 64));
+    }
+
+    void fancyTitlesGetSavedAndDrawn()
+    {
+        TimelineClip t = titlePresets().first();
+        t.track = FX1;
+        t.title.font = "Monospace";
+        t.title.italic = true;
+        t.title.align = 2;
+        t.title.x = 0.9;
+        t.title.outline = 7;
+        t.title.outlineColor = QColor(1, 2, 3);
+        t.title.shadowColor = QColor(200, 0, 0, 100);
+        t.title.boxColor = QColor(9, 8, 7, 50);
+        t.title.spacing = 25;
+        ProjectFile::Data out;
+        out.clips = { t };
+        out.tracks = TimelineWidget::defaultTracks();
+        QTemporaryDir dir;
+        QString error;
+        QVERIFY(ProjectFile::save(dir.filePath("t.mixmedia"), out, &error));
+        ProjectFile::Data in;
+        QVERIFY(ProjectFile::load(dir.filePath("t.mixmedia"), &in, nullptr, &error));
+        QCOMPARE(in.clips.first().title, t.title);
+
+        // Older projects had no "shadow" setting: titles without a box had one anyway
+        QFile file(dir.filePath("t.mixmedia"));
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QByteArray json = file.readAll().replace("\"shadow\": true", "\"oldThing\": true");
+        file.close();
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        file.write(json);
+        file.close();
+        QVERIFY(ProjectFile::load(dir.filePath("t.mixmedia"), &in, nullptr, &error));
+        QVERIFY(in.clips.first().title.shadow); // (the preset has no box)
+
+        // Where the ink lands: lined up left at 10%, or right at 90%
+        auto ink = [](const TitleStyle& style) {
+            QImage img = TitleRenderer::render(style, { 400, 200 });
+            int left = 400, right = -1, count = 0;
+            for (int y = 0; y < 200; ++y)
+                for (int x = 0; x < 400; ++x)
+                    if (qAlpha(img.pixel(x, y)) > 128) {
+                        left = std::min(left, x);
+                        right = std::max(right, x);
+                        ++count;
+                    }
+            return std::tuple { left, right, count };
+        };
+        TitleStyle plain;
+        plain.text = "Hi there";
+        plain.box = false;
+        plain.align = 0;
+        plain.x = 0.1;
+        auto [l, r1, n1] = ink(plain);
+        QVERIFY(std::abs(l - 40) <= 3);
+        plain.align = 2;
+        plain.x = 0.9;
+        auto [l2, r, n2] = ink(plain);
+        QVERIFY(std::abs(r - 360) <= 3);
+        plain.outline = 10;
+        auto [l3, r3, outlined] = ink(plain);
+        QVERIFY(outlined > n2 * 1.3); // an outline adds plenty of ink
+        Q_UNUSED(r1);
+        Q_UNUSED(n1);
+        Q_UNUSED(l2);
+        Q_UNUSED(l3);
+        Q_UNUSED(r3);
+    }
+
+    void soundToolsGetSaved()
+    {
+        TimelineClip c = fakeVideo(5);
+        c.track = V1;
+        QVERIFY(c.keepPitch); // on unless you turn it off
+        c.keepPitch = false;
+        c.denoise = 0.55f;
+        c.duck = true;
+        c.duckAmount = 0.4f;
+        ProjectFile::Data out;
+        out.clips = { c };
+        out.tracks = TimelineWidget::defaultTracks();
+        QTemporaryDir dir;
+        QString error;
+        QVERIFY(ProjectFile::save(dir.filePath("s.mixmedia"), out, &error));
+        ProjectFile::Data in;
+        QVERIFY(ProjectFile::load(dir.filePath("s.mixmedia"), &in, nullptr, &error));
+        const TimelineClip& back = in.clips.first();
+        QVERIFY(!back.keepPitch && back.duck);
+        QCOMPARE(back.denoise, 0.55f);
+        QCOMPARE(back.duckAmount, 0.4f);
+        tl->setClips(in.clips, in.tracks);
+        const RenderClip r = tl->renderClips().first();
+        QVERIFY(!r.keepPitch && r.duck);
+        QCOMPARE(r.denoise, 0.55f);
+    }
+
+    void readingSubtitleFiles()
+    {
+        // A messy .srt: byte-order mark, Windows line endings, styling tags, two-line subtitles
+        QString srt = QString(QChar(0xFEFF)) + "1\r\n00:00:01,500 --> 00:00:03,000\r\n<i>Hello</i> there\r\n\r\n"
+                      "2\r\n00:00:04,000 --> 00:00:06,250\r\n{\\an8}Two\r\nlines\r\n\r\n";
+        QList<SubtitleFile::Line> lines = SubtitleFile::parse(srt);
+        QCOMPARE(lines.size(), 2);
+        QCOMPARE(lines[0].start, 1.5);
+        QCOMPARE(lines[0].end, 3.0);
+        QCOMPARE(lines[0].text, QString("Hello there"));
+        QCOMPARE(lines[1].text, QString("Two\nlines"));
+        QCOMPARE(lines[1].end, 6.25);
+        // ...and back out again
+        QCOMPARE(SubtitleFile::parse(SubtitleFile::toSrt(lines)).size(), 2);
+        QVERIFY(SubtitleFile::toSrt(lines).contains("00:00:06,250"));
+
+        // WebVTT: header, short times, cue names, notes
+        QString vtt = "WEBVTT\n\nNOTE made by hand\n\nintro\n00:02.000 --> 00:03.500\nHi\n\n1:00:00.000 --> 1:00:01.000\nLate\n";
+        lines = SubtitleFile::parse(vtt);
+        QCOMPARE(lines.size(), 2);
+        QCOMPARE(lines[0].start, 2.0);
+        QCOMPARE(lines[1].start, 3600.0);
+
+        QCOMPARE(SubtitleFile::parseTime("1:02.5"), 62.5);
+        QCOMPARE(SubtitleFile::parseTime("nope"), -1.0);
+    }
+
+    void subtitlesOnTheirOwnTrack()
+    {
+        auto line = [](double start, double length, const QString& text) {
+            TimelineClip c;
+            c.kind = TimelineClip::Kind::Subtitle;
+            c.title.text = text;
+            c.start = start;
+            c.duration = length;
+            return c;
+        };
+        tl->addSubtitles({ line(1, 2, "Hello there friend"), line(4, 1, "Bye") }, false);
+        QCOMPARE(tl->tracks().first().kind, TimelineTrack::Kind::Subtitles); // a new track, right on top
+        QCOMPARE(tl->subtitleLines().size(), 2);
+        const int first = tl->subtitleLines().first();
+        QCOMPARE(clip(first).track, 0);
+
+        // Each line is a picture over everything else
+        auto pictures = [this] {
+            QList<RenderClip> out;
+            for (const RenderClip& r : tl->renderClips([](const TitleStyle& s, int lit) { return s.text + "#" + QString::number(lit); }))
+                if (r.path.contains('#'))
+                    out << r;
+            return out;
+        };
+        QList<RenderClip> r = pictures();
+        QCOMPARE(r.size(), 2);
+        QCOMPARE(r[0].path, QString("Hello there friend#-1"));
+        QVERIFY(r[0].layer > tl->renderClips().first().layer); // on top of the video
+
+        // Word by word, two at a time: a picture per word, the one being said lit up
+        TimelineClip shown = clip(first);
+        shown.title = tl->subtitleLook(shown);
+        shown.title.wordByWord = true;
+        shown.title.wordsAtOnce = 2;
+        tl->updateClip(first, shown, "look");
+        QVERIFY(tl->tracks().first().style.wordByWord); // a shared look: the whole track changed
+        r = pictures();
+        QCOMPARE(r.size(), 4); // "Hello there" x2 + "friend" + "Bye"
+        QCOMPARE(r[0].path, QString("Hello there#0"));
+        QCOMPARE(r[1].path, QString("Hello there#1"));
+        QCOMPARE(r[2].path, QString("friend#0"));
+        QCOMPARE(r[0].start, 1.0);
+        QCOMPARE(r[2].start + r[2].duration, 3.0); // the last word lasts to the end of the line
+
+        // Saved and opened again, look and all
+        QTemporaryDir dir;
+        ProjectFile::Data out;
+        out.clips = tl->clips();
+        out.tracks = tl->tracks();
+        QString error;
+        QVERIFY(ProjectFile::save(dir.filePath("subs.mixmedia"), out, &error));
+        ProjectFile::Data in;
+        QVERIFY(ProjectFile::load(dir.filePath("subs.mixmedia"), &in, nullptr, &error));
+        QCOMPARE(in.tracks, out.tracks);
+        QCOMPARE(in.clips[first].title.text, QString("Hello there friend"));
+
+        // Adding a line at the playhead lands on the subtitle track
+        tl->setPlayhead(8.0);
+        TimelineClip extra = line(0, 2, "New");
+        tl->addAtPlayhead(extra);
+        QCOMPARE(tl->subtitleLines().size(), 3);
+        QCOMPARE(tl->clips().last().start, 8.0);
+        QCOMPARE(tl->clips().last().track, 0);
+    }
+
+    void subtitlePanelEditsTheTimeline()
+    {
+        TimelineClip c;
+        c.kind = TimelineClip::Kind::Subtitle;
+        c.title.text = "First";
+        c.start = 1;
+        c.duration = 2;
+        tl->addSubtitles({ c }, false);
+        SubtitlePanel panel(tl);
+        auto* table = panel.findChild<QTableWidget*>();
+        QCOMPARE(table->rowCount(), 1);
+        QCOMPARE(table->item(0, 0)->text(), QString("0:01.000"));
+
+        table->item(0, 2)->setText("Changed words"); // typing into the table...
+        const int line = tl->subtitleLines().first();
+        QCOMPARE(clip(line).title.text, QString("Changed words")); // ...changes the timeline
+        table->item(0, 1)->setText("0:05");
+        QCOMPARE(clip(line).end(), 5.0);
+        table->item(0, 0)->setText("rubbish");
+        QCOMPARE(clip(line).start, 1.0); // couldn't read it: nothing changes
+    }
+
+    void captionWordsBecomeLines()
+    {
+        using W = AutoCaptions::Word;
+        QList<W> words = {
+            { 2.0, 2.3, "Hello", true }, { 2.3, 2.6, "and", false }, { 2.6, 3.0, "welcome.", false },
+            // a new sentence
+            { 3.2, 3.5, "Today", false }, { 3.5, 3.6, "we're", false }, { 3.6, 4.0, "styling", false },
+            // a long pause
+            { 6.0, 6.4, "tables", false },
+        };
+        QList<TimelineClip> lines = AutoCaptions::linesFromWords(words);
+        QCOMPARE(lines.size(), 3);
+        QCOMPARE(lines[0].title.text, QString("Hello and welcome."));
+        QCOMPARE(lines[0].start, 2.0);
+        QVERIFY(lines[0].end() <= lines[1].start + 1e-9); // lingers, but not into the next line
+        QCOMPARE(lines[1].title.text, QString("Today we're styling"));
+        QCOMPARE(lines[2].title.text, QString("tables"));
+        QCOMPARE(lines[1].words.size(), 3);
+        QCOMPARE(lines[1].words[1].start, 0.3); // word timings kept, from the start of the line
+        QVERIFY(lines[0].isSubtitle());
+
+        // Too long to read in one go: split
+        QList<W> chatty;
+        for (int i = 0; i < 20; ++i)
+            chatty << W { i * 0.25, i * 0.25 + 0.2, "word" + QString::number(i), false };
+        for (const TimelineClip& line : AutoCaptions::linesFromWords(chatty))
+            QVERIFY(line.title.text.size() <= 42);
+    }
+
+    void helpPagesAreAllThere()
+    {
+        // The pages the "?" buttons open
+        for (const char* page : { "README.md", "getting-started.md", "timeline.md", "clips.md", "keyframes.md", "titles.md",
+                                  "effects-and-transitions.md", "subtitles.md", "sound.md", "export.md", "settings.md",
+                                  "shortcuts.md", "troubleshooting.md" })
+            QVERIFY2(QFile::exists(QString(":/docs/") + page), page);
+
+        // Every link from one page to another goes somewhere
+        static const QRegularExpression link("\\]\\(([^)#]+)(#[^)]*)?\\)");
+        const QStringList pages = QDir(":/docs").entryList({ "*.md" });
+        QVERIFY(pages.size() >= 13);
+        for (const QString& page : pages) {
+            QFile file(":/docs/" + page);
+            QVERIFY(file.open(QIODevice::ReadOnly));
+            const QString text = QString::fromUtf8(file.readAll());
+            QVERIFY2(text.startsWith("# "), qPrintable(page + " needs a heading"));
+            for (const QRegularExpressionMatch& m : link.globalMatch(text)) {
+                QString target = m.captured(1);
+                if (target.startsWith("http"))
+                    continue;
+                QVERIFY2(pages.contains(target), qPrintable(page + " links to a missing page: " + target));
+            }
+        }
     }
 
     void crashRecoveryBringsWorkBack()

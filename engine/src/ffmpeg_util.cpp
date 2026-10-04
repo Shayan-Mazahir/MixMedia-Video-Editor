@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shayan Mazahir. Part of MixMedia Video Editor, see NOTICE.
 
 #include "ffmpeg_util.h"
+#include "effects.h" // (threadLimit)
 
 #include <filesystem>
 
@@ -74,6 +75,9 @@ int openDecoder(AVFormatContext* fmt, AVMediaType type, CodecPtr& out, AVBufferR
         return -1;
 
     // 0 = one thread per core. Lovely for export, wasteful for a single picture.
+    // (and never more than the user's said we can have)
+    if (threadLimit() > 0)
+        threads = threads > 0 ? std::min(threads, threadLimit()) : threadLimit();
     ctx->thread_count = isStillImage(fmt) ? 1 : threads;
     ctx->pkt_timebase = fmt->streams[idx]->time_base;
     if (hwDevice && type == AVMEDIA_TYPE_VIDEO) {

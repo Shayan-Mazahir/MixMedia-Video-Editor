@@ -106,6 +106,37 @@ bool AudioReader::decodeMore()
     }
 }
 
+void AudioReader::readBackwards(double end, int frames, float* out)
+{
+    std::memset(out, 0, sizeof(float) * frames * AudioChannels);
+    if (!isOpen() || frames <= 0)
+        return;
+    const double from = end - double(frames) / AudioRate;
+    if (from < m_backStart - 1e-4 || end > m_backEnd + 1e-4) {
+        // Decode the next couple of seconds back, starting a little early so the decoder has
+        // warmed up (sound decoders can glitch for a moment right after a jump)
+        constexpr double Chunk = 2.0, Warmup = 0.25;
+        double chunkStart = std::max(0.0, std::min(from, end - Chunk));
+        double warm = std::min(Warmup, chunkStart);
+        int n = int(std::ceil((end - chunkStart + warm) * AudioRate));
+        std::vector<float> all(size_t(n) * AudioChannels);
+        read(chunkStart - warm, n, all.data());
+        int skip = int(std::lround(warm * AudioRate));
+        m_back.assign(all.begin() + size_t(skip) * AudioChannels, all.end());
+        m_backStart = chunkStart;
+        m_backEnd = chunkStart + double(m_back.size() / AudioChannels) / AudioRate;
+    }
+    const int64_t last = std::llround((end - m_backStart) * AudioRate) - 1; // the sample just before `end`
+    const int64_t available = int64_t(m_back.size() / AudioChannels);
+    for (int i = 0; i < frames; ++i) {
+        int64_t idx = last - i;
+        if (idx >= 0 && idx < available) {
+            out[i * 2] = m_back[size_t(idx) * 2];
+            out[i * 2 + 1] = m_back[size_t(idx) * 2 + 1];
+        }
+    }
+}
+
 bool AudioReader::read(double sec, int frames, float* out)
 {
     std::memset(out, 0, sizeof(float) * frames * AudioChannels);

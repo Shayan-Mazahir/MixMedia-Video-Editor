@@ -1,12 +1,17 @@
 # Everything except main(), so the tests can use the same pieces
 qt_add_library(editor_ui STATIC
+    AppSettings.h
     AudioPlayer.cpp
+    AutoCaptions.cpp
+    AutoCaptions.h
     AudioPlayer.h
     ClipInspector.cpp
     ClipInspector.h
     ExportDialog.cpp
     ExportDialog.h
     FilmstripCache.cpp
+    HelpWindow.cpp
+    HelpWindow.h
     FilmstripCache.h
     MainWindow.cpp
     MainWindow.h
@@ -20,7 +25,14 @@ qt_add_library(editor_ui STATIC
     PreviewWidget.h
     ProjectFile.cpp
     ProjectFile.h
+    ProjectSettings.h
     RenderClip.h
+    SettingsDialog.cpp
+    SettingsDialog.h
+    SubtitleFile.cpp
+    SubtitleFile.h
+    SubtitlePanel.cpp
+    SubtitlePanel.h
     ThreadName.h
     TimelineClip.h
     TimelineWidget.cpp
@@ -35,8 +47,11 @@ qt_add_library(editor_ui STATIC
     WaveformCache.h
 )
 target_include_directories(editor_ui PUBLIC .)
+# The help pages (docs/), packed inside the app so they work offline
+file(GLOB help_pages CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/docs/*.md")
+qt_add_resources(editor_ui "docs" PREFIX "/docs" BASE "${CMAKE_SOURCE_DIR}/docs" FILES ${help_pages})
 target_compile_definitions(editor_ui PRIVATE MIXMEDIA_VERSION="${PROJECT_VERSION}")
-target_link_libraries(editor_ui PUBLIC Qt6::Widgets Qt6::Multimedia ve_engine)
+target_link_libraries(editor_ui PUBLIC Qt6::Widgets Qt6::Multimedia Qt6::Network ve_engine)
 if(UNIX AND NOT APPLE)
     target_link_libraries(editor_ui PUBLIC Qt6::DBus)
 endif()

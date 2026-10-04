@@ -18,7 +18,7 @@ class ExportDialog : public QDialog {
 
 public:
     ExportDialog(QSize projectSize, double projectFps, const QString& suggestedPath,
-                 bool canCopy, const QString& whyNotCopy, QWidget* parent = nullptr);
+                 bool canCopy, const QString& whyNotCopy, bool hasSubtitles = false, QWidget* parent = nullptr);
 
     QString path() const;
     int format() const; // VE_FORMAT_*
@@ -27,6 +27,10 @@ public:
     int crf() const;
     bool useGraphicsCard() const;
     bool instant() const; // copy without re-encoding
+    // Subtitles: in the picture, as an .srt next to the video, and/or a track players can switch on
+    bool burnSubtitles() const;
+    bool subtitleFile() const;
+    bool subtitleTrack() const;
 
     static QString extensionFor(int format);
 
@@ -64,4 +68,8 @@ private:
     QRadioButton* m_normal;
     QLabel* m_copyNote;
     QLabel* m_shapeNote;
+    QCheckBox* m_burnSubs = nullptr;
+    QCheckBox* m_srtSubs = nullptr;
+    QCheckBox* m_trackSubs = nullptr;
+    bool m_hasSubtitles;
 };
