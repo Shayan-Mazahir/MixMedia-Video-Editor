@@ -8,3 +8,6 @@ videos to test with/
 .package-cache/
 MixMedia-Linux-x86_64.AppImage
 MixMedia-Linux-x86_64.tar.gz
+
+# Log from the Qt download tool
+aqtinstall.log

@@ -30,9 +30,11 @@ podman run --rm -i $( [ -t 1 ] && echo -t ) \
         if [ ! -d "$cache/qt" ]; then
             apt-get install -y --no-install-recommends python3-pip >/dev/null
             pip3 install --quiet aqtinstall
+            cd "$cache" # (aqt leaves its log wherever it runs, so keep it in the cache)
             version=$(aqt list-qt linux desktop --spec "$QT_VERSION" --latest-version)
             echo "Getting Qt $version..."
             aqt install-qt linux desktop "$version" linux_gcc_64 -m qtmultimedia -O "$cache/qt-download"
+            cd /src
             mv "$cache/qt-download/$version/gcc_64" "$cache/qt"
             rm -r "$cache/qt-download"
         fi
