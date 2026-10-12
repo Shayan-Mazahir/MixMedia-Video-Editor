@@ -50,6 +50,10 @@ whisper_alignment_heads_preset alignmentFor(std::string name)
     std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return char(std::tolower(c)); });
     name = name.substr(name.find_last_of("/\\") + 1);
     const bool en = name.find(".en") != std::string::npos;
+    // Distilled models keep the big encoder but only a couple of decoder layers, so none of the
+    // presets fit (and using one would point at layers that aren't there)
+    if (name.find("distil") != std::string::npos)
+        return WHISPER_AHEADS_NONE;
     if (name.find("large-v3-turbo") != std::string::npos) return WHISPER_AHEADS_LARGE_V3_TURBO;
     if (name.find("large-v3") != std::string::npos) return WHISPER_AHEADS_LARGE_V3;
     if (name.find("large-v2") != std::string::npos) return WHISPER_AHEADS_LARGE_V2;

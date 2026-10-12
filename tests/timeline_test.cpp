@@ -1406,7 +1406,7 @@ private slots:
     {
         // The pages the "?" buttons open
         for (const char* page : { "README.md", "getting-started.md", "timeline.md", "clips.md", "keyframes.md", "titles.md",
-                                  "effects-and-transitions.md", "subtitles.md", "sound.md", "export.md", "settings.md",
+                                  "effects-and-transitions.md", "subtitles.md", "speech-models.md", "sound.md", "export.md", "settings.md",
                                   "shortcuts.md", "troubleshooting.md" })
             QVERIFY2(QFile::exists(QString(":/docs/") + page), page);
 

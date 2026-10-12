@@ -34,7 +34,7 @@ It listens to the timeline as you've edited it, so the subtitles line up with yo
 | **Great** | 548 MB | Accents, mixed languages, mumbling. Can't translate! |
 | **Best** | 1 GB | The most accurate, and the one to use for **translating** |
 
-Only the one you pick gets downloaded, and MixMedia itself stays the same size. Bigger ones are more accurate but slower, and use more memory while they work (about 0.4 GB for Fast up to 2 GB for Best). Start with Fast, and step up only if it gets too much wrong.
+Curious what these are, or want to try others? See **[Speech models explained](speech-models.md)**. Only the one you pick gets downloaded, and MixMedia itself stays the same size. Bigger ones are more accurate but slower, and use more memory while they work (about 0.4 GB for Fast up to 2 GB for Best). Start with Fast, and step up only if it gets too much wrong.
 
 ### Getting it more right
 
@@ -50,6 +50,8 @@ Any **whisper.cpp model** (a `ggml-….bin` file) works, such as one trained for
 - click **Models folder** and drop the file in there.
 
 It then shows up in the list as *Your model: …*. The models folder is also where to delete the downloaded ones if you'd like the space back.
+
+Where to find more models, and how to tell which ones work: **[Speech models explained](speech-models.md)**.
 
 ### Right-to-left languages
 

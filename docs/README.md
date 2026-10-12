@@ -15,6 +15,7 @@ Welcome! Pick whatever you're stuck on. Press **F1** in MixMedia any time to get
 - [Titles](titles.md): text on screen, and how to make it look the way you want
 - [Effects and transitions](effects-and-transitions.md)
 - [Subtitles and auto-captions](subtitles.md)
+  - [Speech models explained](speech-models.md): which ones there are, and trying others
 - [Sound](sound.md): volume, fades, noise, ducking music under talking
 
 ## Finishing
