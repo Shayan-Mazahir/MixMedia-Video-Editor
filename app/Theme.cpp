@@ -4,6 +4,7 @@
 #include "AppPaths.h"
 #include "Theme.h"
 
+#include <QFontDatabase>
 #include <QApplication>
 #include <QDir>
 #include <QGuiApplication>
@@ -266,6 +267,23 @@ QDialogButtonBox { dialogbuttonbox-buttons-have-icons: 0; }
 }
 
 } // namespace
+
+bool hasEmoji()
+{
+    // Every emoji font calls itself that: Noto Color Emoji, Segoe UI Emoji, Apple Color Emoji, Twemoji...
+    static const bool haveOne = [] {
+        for (const QString& family : QFontDatabase::families())
+            if (family.contains("emoji", Qt::CaseInsensitive))
+                return true;
+        return false;
+    }();
+    return haveOne;
+}
+
+QString emoji(const QString& emoji, const QString& otherwise)
+{
+    return hasEmoji() ? emoji : otherwise;
+}
 
 QFont font(double scale, bool bold)
 {

@@ -5,6 +5,7 @@
 
 #include <QColor>
 #include <QFont>
+#include <QString>
 
 class QApplication;
 class QWidget;
@@ -28,6 +29,11 @@ const Colours& colours();
 // The app's normal font, scaled (1.0 = normal size). Everything sizes off this, so text follows
 // whatever size your system uses instead of fixed pixels.
 QFont font(double scale = 1.0, bool bold = false);
+
+// An emoji if this computer has a font that can show it, otherwise something plain instead
+// (rather than an empty box: some Linux setups, like a toolbox container, have no emoji font)
+QString emoji(const QString& emoji, const QString& otherwise);
+bool hasEmoji(); // is there a font that can show emoji?
 
 // Makes a window big enough for everything in it, at whatever font size the system uses
 // (call just before showing it). Never smaller than it would be anyway.

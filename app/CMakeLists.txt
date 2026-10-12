@@ -33,10 +33,14 @@ qt_add_library(editor_ui STATIC
     RenderClip.h
     SettingsDialog.cpp
     SettingsDialog.h
+    AboutDialog.cpp
+    AboutDialog.h
     AppPaths.cpp
     AppPaths.h
     QuietCut.cpp
     QuietCut.h
+    SelfUpdate.cpp
+    SelfUpdate.h
     SubtitleFile.cpp
     SubtitleFile.h
     SubtitlePanel.cpp
@@ -63,6 +67,8 @@ qt_add_library(editor_ui STATIC
 target_include_directories(editor_ui PUBLIC .)
 # The help pages (docs/), packed inside the app so they work offline
 file(GLOB help_pages CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/docs/*.md")
+# The About window's words (app/about.md: edit that to change them)
+qt_add_resources(editor_ui "about" PREFIX "/" FILES about.md)
 qt_add_resources(editor_ui "docs" PREFIX "/docs" BASE "${CMAKE_SOURCE_DIR}/docs" FILES ${help_pages})
 target_compile_definitions(editor_ui PRIVATE MIXMEDIA_VERSION="${PROJECT_VERSION}")
 target_link_libraries(editor_ui PUBLIC Qt6::Widgets Qt6::Multimedia Qt6::Network ve_engine)

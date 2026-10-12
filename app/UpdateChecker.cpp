@@ -3,6 +3,7 @@
 
 #include "AppPaths.h"
 #include "UpdateChecker.h"
+#include "SelfUpdate.h"
 
 #include "Theme.h"
 
@@ -70,13 +71,26 @@ void announce(QWidget* parent, const Release& r, bool byHand)
     auto* notes = new QTextBrowser;
     notes->setMarkdown(r.notes.isEmpty() ? QStringLiteral("(No notes for this one.)") : r.notes);
     notes->setOpenExternalLinks(true);
+    // This copy can update itself (and the release has the file it needs)? Then offer that,
+    // as well as downloading it yourself
+    const SelfUpdate::Kind how = SelfUpdate::kind();
+    const std::optional<Asset> file = r.asset(SelfUpdate::assetName(how));
+    const bool canUpdate = how != SelfUpdate::Kind::None && file.has_value();
     auto* buttons = new QDialogButtonBox;
-    QPushButton* download = buttons->addButton("Download", QDialogButtonBox::AcceptRole);
+    QPushButton* update = canUpdate ? buttons->addButton("Update now", QDialogButtonBox::AcceptRole) : nullptr;
+    QPushButton* download = buttons->addButton(canUpdate ? "Download it myself" : "Download",
+                                               canUpdate ? QDialogButtonBox::ActionRole : QDialogButtonBox::AcceptRole);
     QPushButton* skip = buttons->addButton("Skip this version", QDialogButtonBox::DestructiveRole);
     buttons->addButton("Later", QDialogButtonBox::RejectRole);
-    download->setDefault(true);
+    (update ? update : download)->setDefault(true);
+    if (update)
+        update->setToolTip(QString("Downloads it (%1 MB), checks it, swaps it in and restarts. Your settings, "
+                                   "models and projects stay as they are.").arg(file->size / (1024 * 1024)));
+    bool updating = false;
     QObject::connect(buttons, &QDialogButtonBox::clicked, &dialog, [&](QAbstractButton* b) {
-        if (b == download)
+        if (b == update)
+            updating = true;
+        else if (b == download)
             QDesktopServices::openUrl(QUrl(r.url));
         else if (b == skip)
             AppPaths::settings().setValue("updates/skipped", r.tag);
@@ -90,6 +104,20 @@ void announce(QWidget* parent, const Release& r, bool byHand)
     skip->setVisible(!byHand || AppPaths::settings().value("updates/skipped").toString() != r.tag);
     Theme::fit(dialog);
     dialog.exec();
+    if (!updating)
+        return;
+
+    const QString program = SelfUpdate::install(parent, *file);
+    if (program.isEmpty())
+        return;
+    QMessageBox done(QMessageBox::Information, "MixMedia's updated",
+                     QString("MixMedia %1 is ready. Restart now to start using it?").arg(r.tag), QMessageBox::NoButton, parent);
+    QPushButton* now = done.addButton("Restart now", QMessageBox::AcceptRole);
+    done.addButton("Later", QMessageBox::RejectRole);
+    done.setDefaultButton(now);
+    done.exec();
+    if (done.clickedButton() != now || !SelfUpdate::restartInto(program))
+        QMessageBox::information(parent, "MixMedia's updated", "No rush: it'll be the new version next time you open MixMedia.");
 }
 
 // Which updates do you want? Shown the first time (and from Settings)
@@ -139,6 +167,14 @@ void setChannel(Channel c)
     AppPaths::settings().setValue("updates/channel", c == Channel::Off ? "off" : c == Channel::PreReleases ? "pre" : "releases");
 }
 
+std::optional<Asset> Release::asset(const QString& name) const
+{
+    for (const Asset& a : assets)
+        if (a.name == name)
+            return a;
+    return std::nullopt;
+}
+
 QList<Release> parseReleases(const QByteArray& json)
 {
     QList<Release> out;
@@ -153,6 +189,13 @@ QList<Release> parseReleases(const QByteArray& json)
         r.published = QDateTime::fromString(o["published_at"].toString(), Qt::ISODate);
         r.url = o["html_url"].toString();
         r.notes = o["body"].toString();
+        for (const QJsonValue& a : o["assets"].toArray()) {
+            const QJsonObject file = a.toObject();
+            const QString digest = file["digest"].toString();
+            r.assets << Asset { file["name"].toString(), file["browser_download_url"].toString(),
+                                qint64(file["size"].toDouble()),
+                                digest.startsWith("sha256:") ? digest.mid(7).toLower() : QString() };
+        }
         if (!r.version.isNull())
             out << r;
     }

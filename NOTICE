@@ -28,4 +28,5 @@ Built with
   GPL-licensed codecs in the release builds
 - whisper.cpp and ggml (https://github.com/ggml-org/whisper.cpp) for
   auto-captions, used under the MIT licence, Copyright (c) 2023-2026 The ggml
-  authors. The speech models it downloads are OpenAI's Whisper models (MIT).
+  authors. The speech models it downloads are OpenAI's Whisper models (MIT),
+  and the speech detector is Silero VAD (https://github.com/snakers4/silero-vad, MIT).

@@ -15,6 +15,7 @@
 #include "SubtitlePanel.h"
 #include "TitleRenderer.h"
 #include "UpdateChecker.h"
+#include "SelfUpdate.h"
 #include "ProjectFile.h"
 #include "TimelineWidget.h"
 
@@ -34,6 +35,7 @@
 #include <QMouseEvent>
 #include <QSlider>
 #include <QSignalSpy>
+#include <QProcess>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTableWidget>
@@ -1426,6 +1428,96 @@ private slots:
                 QVERIFY2(pages.contains(target), qPrintable(page + " links to a missing page: " + target));
             }
         }
+    }
+
+    void updateKnowsTheDownloads()
+    {
+        // GitHub lists each release's files, with a checksum for each
+        const QJsonArray assets {
+            QJsonObject { { "name", "MixMedia-Linux-x86_64.AppImage" }, { "size", 1234 },
+                          { "digest", "sha256:73900BF7DBD3A8ECF3A4B05C34A44B2EBD141042D607287F841A38531BB99DC3" },
+                          { "browser_download_url", "https://example.com/MixMedia-Linux-x86_64.AppImage" } },
+            QJsonObject { { "name", "MixMedia-Setup-x64.exe" }, { "size", 99 }, { "browser_download_url", "https://example.com/setup.exe" } },
+        };
+        const QByteArray json = QJsonDocument(QJsonArray { QJsonObject {
+            { "tag_name", "v0.8.0" }, { "published_at", "2026-10-12T10:00:00Z" }, { "assets", assets } } }).toJson();
+        const auto releases = UpdateChecker::parseReleases(json);
+        QCOMPARE(releases.size(), 1);
+        const auto appImage = releases[0].asset("MixMedia-Linux-x86_64.AppImage");
+        QVERIFY(appImage.has_value());
+        QCOMPARE(appImage->size, qint64(1234));
+        QCOMPARE(appImage->sha256, QString("73900bf7dbd3a8ecf3a4b05c34a44b2ebd141042d607287f841a38531bb99dc3"));
+        QVERIFY(releases[0].asset("MixMedia-Setup-x64.exe")->sha256.isEmpty()); // (no checksum given)
+        QVERIFY(!releases[0].asset("something-else.zip").has_value());
+    }
+
+    void selfUpdateSwapsTheAppImage()
+    {
+#ifndef Q_OS_LINUX
+        QSKIP("Updating itself is Linux only");
+#endif
+        QTemporaryDir dir;
+        const QString app = dir.filePath("MixMedia.AppImage"), fresh = dir.filePath(".mixmedia-update.part");
+        for (const auto& [path, text] : { std::pair { app, "old" }, std::pair { fresh, "new" } }) {
+            QFile f(path);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(text);
+        }
+        QVERIFY(SelfUpdate::replaceAppImage(fresh, app));
+        QFile f(app);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QCOMPARE(f.readAll(), QByteArray("new"));
+        QVERIFY(QFileInfo(app).isExecutable());
+        QVERIFY(!QFileInfo::exists(fresh));
+    }
+
+    void selfUpdateSwapsTheFolderButKeepsYourData()
+    {
+#ifndef Q_OS_LINUX
+        QSKIP("Updating itself is Linux only");
+#endif
+        QTemporaryDir dir;
+        auto write = [](const QString& path, const QByteArray& text) {
+            QDir().mkpath(QFileInfo(path).absolutePath());
+            QFile f(path);
+            return f.open(QIODevice::WriteOnly) && f.write(text) == text.size();
+        };
+        // The installed copy, with your data folder in it
+        const QString app = dir.filePath("MixMedia");
+        QVERIFY(write(app + "/AppRun", "old"));
+        QVERIFY(write(app + "/usr/bin/mixmedia", "old"));
+        QVERIFY(write(app + "/usr/lib/gone-in-the-new-one.so", "old"));
+        QVERIFY(write(app + "/MixMedia data/settings.ini", "mine"));
+        // The new version, packed the way the real download is
+        const QString build = dir.filePath("build/MixMedia");
+        QVERIFY(write(build + "/AppRun", "new"));
+        QVERIFY(write(build + "/usr/bin/mixmedia", "new"));
+        QVERIFY(write(build + "/README.txt", "new"));
+        QVERIFY(write(build + "/MixMedia data/settings.ini", "theirs")); // (never in a real one, but just in case)
+        const QString tarball = dir.filePath("update.tar.gz");
+        QCOMPARE(QProcess::execute("tar", { "czf", tarball, "-C", dir.filePath("build"), "MixMedia" }), 0);
+
+        QString error;
+        QVERIFY2(SelfUpdate::replaceFolder(tarball, app, &error), qPrintable(error));
+        auto read = [](const QString& path) {
+            QFile f(path);
+            return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+        };
+        QCOMPARE(read(app + "/AppRun"), QByteArray("new"));
+        QCOMPARE(read(app + "/usr/bin/mixmedia"), QByteArray("new"));
+        QCOMPARE(read(app + "/README.txt"), QByteArray("new"));
+        QCOMPARE(read(app + "/MixMedia data/settings.ini"), QByteArray("mine")); // untouched
+        QVERIFY(!QFileInfo::exists(app + "/usr/lib/gone-in-the-new-one.so")); // usr/ was swapped whole
+        QVERIFY(!QFileInfo::exists(app + "/.update-new"));
+        QVERIFY(!QFileInfo::exists(app + "/.update-old"));
+
+        // Something that isn't MixMedia: refused, and nothing changes
+        QVERIFY(write(dir.filePath("junk/hello.txt"), "hi"));
+        const QString junk = dir.filePath("junk.tar.gz");
+        QCOMPARE(QProcess::execute("tar", { "czf", junk, "-C", dir.filePath("junk"), "hello.txt" }), 0);
+        QVERIFY(!SelfUpdate::replaceFolder(junk, app, &error));
+        QCOMPARE(read(app + "/AppRun"), QByteArray("new"));
+        QVERIFY(!QFileInfo::exists(app + "/hello.txt"));
     }
 
     void updateCheckPicksTheRightRelease()

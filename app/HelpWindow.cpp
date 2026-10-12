@@ -77,6 +77,14 @@ void HelpWindow::open(const QString& page)
         window = new HelpWindow;
         window->setAttribute(Qt::WA_DeleteOnClose);
     }
+    // Opened from a window that blocks everything else (like Export)? Then help goes on top of
+    // it, or you couldn't click or scroll it until that window closed
+    QWidget* blocking = QApplication::activeModalWidget();
+    const Qt::WindowModality modality = blocking && blocking != window ? Qt::ApplicationModal : Qt::NonModal;
+    if (window->windowModality() != modality) {
+        window->hide(); // (it can only change while hidden)
+        window->setWindowModality(modality);
+    }
     window->show(page);
 }
 

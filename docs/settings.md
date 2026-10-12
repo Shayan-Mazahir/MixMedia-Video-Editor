@@ -59,7 +59,13 @@ The first time you open MixMedia, it asks whether you'd like to hear about new v
 - **Releases and pre-releases**: test versions too (newest features, maybe a bit rough).
 - **Don't check**: MixMedia never asks GitHub about anything.
 
-When it's on, MixMedia checks when you open it, at most once a day. It never interrupts you while you're editing. A brand-new release is only mentioned once it's been out for an hour, so its downloads are ready. When there's one, you'll see what's new and can **Download** it (opens its page in your browser), wait until **Later**, or **Skip this version**.
+When it's on, MixMedia checks when you open it, at most once a day. It never interrupts you while you're editing. A brand-new release is only mentioned once it's been out for an hour, so its downloads are ready. When there's one, you'll see what's new, and then:
+
+- **Update now** (Linux): MixMedia downloads the new version, checks every byte of it is right, swaps it in and offers to restart. Your settings, models and projects stay just as they are. If anything goes wrong, nothing gets changed.
+- **Download it myself** (or just **Download** on Windows): opens its page in your browser, to get it by hand.
+- **Later**, or **Skip this version**.
+
+**Update now** works with the AppImage and the Linux folder download, as long as MixMedia's folder can be written to. On Windows, run the new installer: it updates MixMedia in place and keeps your data folder.
 
 **Help → Check for updates…** (or **Check now** in **Edit → Settings… → Updates**) checks straight away, any time. Change your choice in **Edit → Settings… → Updates**.
 

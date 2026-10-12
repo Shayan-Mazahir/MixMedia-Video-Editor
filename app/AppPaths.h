@@ -25,6 +25,8 @@ namespace AppPaths {
 // older versions, and loads the extra fonts
 void setUp();
 
+// The folder you'd think of as "where MixMedia is" (for the AppImage: where the .AppImage file is)
+QString appFolder();
 QString data();
 bool portable(); // true = next to the program, false = the usual per-user place
 QString models();

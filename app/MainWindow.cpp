@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Shayan Mazahir. Part of MixMedia Video Editor, see NOTICE.
 
+#include "AboutDialog.h"
 #include "AppPaths.h"
 #include "MainWindow.h"
 #include "AudioPlayer.h"
@@ -1590,26 +1591,7 @@ void MainWindow::evenOutVolume(int index)
 
 void MainWindow::showAbout()
 {
-    // Keep this credit if you share a modified version, see NOTICE
-    QMessageBox box(this);
-    box.setWindowTitle("About MixMedia");
-    box.setIconPixmap(QPixmap(":/mixmedia.png").scaled(96, 96, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-    box.setTextFormat(Qt::RichText);
-    box.setText(QString(
-        "<h2>MixMedia Video Editor</h2>"
-        "<p>Version %1</p>"
-        "<p>Made by <b>Shayan Mazahir</b><br>"
-        "<a href='https://github.com/Shayan-Mazahir/MixMedia-Video-Editor'>github.com/Shayan-Mazahir/MixMedia-Video-Editor</a></p>"
-        "<p>Free and open source under the "
-        "<a href='https://www.gnu.org/licenses/gpl-3.0.html'>GNU GPL v3</a>.<br>"
-        "You can use, change and share it, as long as you keep it open<br>"
-        "and keep the credit to the original author.</p>"
-        "<p style='color:#808286'>Built with Qt %2 and FFmpeg (engine v%3)</p>")
-                    .arg(MIXMEDIA_VERSION, qVersion(), ve_version()));
-    box.setTextInteractionFlags(Qt::TextBrowserInteraction);
-    if (auto* label = box.findChild<QLabel*>("qt_msgbox_label"))
-        label->setOpenExternalLinks(true);
-    box.exec();
+    AboutDialog(this).exec(); // (keep its credit if you share a modified version, see NOTICE)
 }
 
 // ---- Testing helper ----

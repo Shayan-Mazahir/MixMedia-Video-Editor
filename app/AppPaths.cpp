@@ -21,9 +21,6 @@
 
 namespace AppPaths {
 
-namespace {
-
-// The folder you'd think of as "where MixMedia is"
 QString appFolder()
 {
     // The AppImage runs from a temporary read-only copy; the real file is wherever you put it
@@ -36,6 +33,8 @@ QString appFolder()
         return QDir::cleanPath(dir.filePath("../.."));
     return dir.path();
 }
+
+namespace {
 
 bool canWrite(const QString& folder)
 {

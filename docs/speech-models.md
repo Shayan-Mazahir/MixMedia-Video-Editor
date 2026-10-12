@@ -51,7 +51,7 @@ So `ggml-small.en-q5_1.bin` is the small one, English only, squeezed.
 
 ### Files that won't work
 
-MixMedia uses **whisper.cpp** models, which are single `ggml-….bin` files. Lots of model pages on Hugging Face have other kinds of files (`.safetensors`, `.pt`, `.onnx`, `.gguf`), which are for other programs. If a model page doesn't have a `ggml` file, it won't work in MixMedia.
+MixMedia uses **whisper.cpp** models, which are single `ggml-….bin` files. Lots of model pages on Hugging Face have other kinds of files (`.safetensors`, `.pt`, `.onnx`, `.gguf`), which are for other programs. If a model page doesn't have a `ggml` file, it won't work in MixMedia *(for now at least 👀)*. 
 
 ### A tip for word-by-word captions
 

@@ -21,6 +21,14 @@ Channel channel();           // what you picked
 bool channelChosen();        // asked yet?
 void setChannel(Channel c);
 
+// One of a release's downloads
+struct Asset {
+    QString name;   // e.g. "MixMedia-Linux-x86_64.AppImage"
+    QString url;
+    qint64 size = 0;
+    QString sha256; // what the file's checksum has to be (lowercase hex; empty if GitHub didn't say)
+};
+
 struct Release {
     QString tag;              // e.g. "v0.5.1"
     QVersionNumber version;
@@ -29,6 +37,8 @@ struct Release {
     QDateTime published;
     QString url;              // the release's page
     QString notes;            // its description (Markdown)
+    QList<Asset> assets;
+    std::optional<Asset> asset(const QString& name) const;
 };
 
 // GitHub's list of releases (the JSON from /repos/.../releases)
