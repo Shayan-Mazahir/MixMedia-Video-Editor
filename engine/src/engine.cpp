@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstring>
 #include <thread>
+#include <vector>
 
 struct ve_reader {
     ve::VideoReader reader;
@@ -312,6 +313,33 @@ int ve_timeline_render_audio(ve_timeline* tl, double t, int frames, float* out)
         return VE_ERR_ARG;
     tl->timeline.renderAudio(t, frames, out);
     return VE_OK;
+}
+
+int ve_timeline_loudness(ve_timeline* tl, double step, float* out_db, int max, ve_progress_fn progress, void* user)
+{
+    if (!tl || step <= 0 || !out_db || max < 0)
+        return VE_ERR_ARG;
+    const double duration = tl->timeline.duration();
+    const int count = std::min(max, int(std::ceil(duration / step)));
+    const int perStep = std::max(1, int(std::lround(step * ve::AudioRate)));
+    // A second's worth at a time (much quicker than lots of tiny calls)
+    const int stepsPerChunk = std::max(1, ve::AudioRate / perStep);
+    std::vector<float> chunk(size_t(perStep) * size_t(stepsPerChunk) * ve::AudioChannels);
+    for (int i = 0; i < count; i += stepsPerChunk) {
+        const int steps = std::min(stepsPerChunk, count - i);
+        tl->timeline.renderAudio(i * step, perStep * steps, chunk.data());
+        for (int k = 0; k < steps; ++k) {
+            double sum = 0;
+            const float* s = chunk.data() + size_t(k) * perStep * ve::AudioChannels;
+            for (int n = 0; n < perStep * ve::AudioChannels; ++n)
+                sum += double(s[n]) * s[n];
+            const double rms = std::sqrt(sum / (perStep * ve::AudioChannels));
+            out_db[i + k] = rms > 1e-5 ? float(20 * std::log10(rms)) : -100.0f;
+        }
+        if (progress && progress(double(i + steps) / count, user))
+            return VE_ERR_CANCELLED;
+    }
+    return count;
 }
 
 int ve_apply_effects(const ve_clip* c, uint8_t* rgba, int w, int h)

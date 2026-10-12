@@ -11,3 +11,6 @@ MixMedia-Linux-x86_64.tar.gz
 
 # Log from the Qt download tool
 aqtinstall.log
+
+# MixMedia's own settings/models folder (made next to the program when it runs)
+MixMedia data/

@@ -15,14 +15,26 @@ class QWidget;
 // timeline, and turn what's heard into subtitle lines.
 namespace AutoCaptions {
 
+// The ones we offer to download (squeezed "quantized" versions: a third of the size and the
+// memory, and they hear just about as well)
+// (No English-only ".en" ones: they're a touch better at pure English, but if anything else
+// gets said they go round in circles making things up.)
 struct Model {
-    QString id;    // e.g. "base" (the file is ggml-<id>.bin)
-    QString name;  // what people see
+    QString id;        // e.g. "small-q5_1" (the file is ggml-<id>.bin)
+    QString name;      // what people see
     int megabytes;
 };
 QList<Model> models();
 QString modelFolder();
 QString modelPath(const QString& id);
+
+// The speech detector (tiny), so only the talking gets listened to
+QString detectorPath();
+
+// Your own models: files picked with "Add a model file…", and any ggml-*.bin in the models
+// folder that isn't one of ours
+QStringList ownModels();
+void addOwnModel(const QString& path);
 
 struct Word {
     double start, end;

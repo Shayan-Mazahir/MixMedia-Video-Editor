@@ -304,6 +304,12 @@ typedef int (*ve_progress_fn)(double done, void* user);
 int ve_export(ve_timeline* tl, ve_export_settings* settings,
               ve_progress_fn progress, void* user);
 
+/* How loud the timeline's finished sound is, every `step` seconds (in dB, -100 = silence).
+   Fills up to `max` values and returns how many it filled (or a negative VE_ERR_*).
+   Used to find the quiet bits. `progress` can cancel it. */
+int ve_timeline_loudness(ve_timeline* tl, double step, float* out_db, int max,
+                         ve_progress_fn progress, void* user);
+
 /* ---- Auto-captions (whisper.cpp) ---- */
 
 /* 1 if this build has them */
@@ -313,8 +319,11 @@ typedef struct ve_caption_settings {
     const char* model_path; /* a whisper ggml model file, e.g. ggml-base.bin */
     const char* language;   /* "en", "fr", ... or "auto" to work it out */
     int translate;          /* 1 = write it in English, whatever's being spoken */
-    int threads;            /* CPU threads, 0 = the thread limit (or all of them) */
+    int threads;            /* CPU threads, 0 = the thread limit (or a sensible number) */
     int use_gpu;            /* 1 = use the graphics card if this build can */
+    const char* vad_model_path; /* optional: a speech detector (ggml-silero-*.bin), so only talking gets listened to */
+    const char* hint;       /* optional: names and unusual words to expect, e.g. "MixMedia, Shayan" */
+    int careful;            /* 1 = weighs up several guesses for each bit (more accurate, slower) */
 } ve_caption_settings;
 
 typedef struct ve_caption_word {

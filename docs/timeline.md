@@ -26,6 +26,20 @@ Each video track shows on top of the ones below it, so stacking 5 videos means 5
 - **Split**: put the playhead where you want the cut and press **S** (or right-click → *Split here*).
 - **Delete**: select it and press **Delete**. Everything after it slides back to close the gap ("ripple delete"). **Shift+Delete** leaves the gap.
 
+## Cutting out the quiet bits
+
+Talking to the camera and pausing a lot? **Edit → Cut out the quiet bits…** finds the pauses and cuts them out for you (the "jump cut" style).
+
+1. It listens to the timeline (a few seconds, even for an hour of video).
+2. Then you choose:
+   - **Pauses longer than**: shorter ones are left alone, they're just the gaps between words. 0.6 seconds is a good start.
+   - **Leave either side**: keeps a little of each pause, so it doesn't sound chopped. Turn it up if words get clipped.
+   - **What counts as quiet**: MixMedia works out a level for your recording. Slide left if it's cutting too much, right if it's missing pauses (like when there's background noise).
+3. It tells you how many pauses it found and how long the video will be, and changes as you adjust.
+4. Click **Cut them out**.
+
+Every track gets cut at the same spots, so picture, sound and titles stay in sync. **Ctrl+Z** puts it all back in one go. Tip: do this *before* auto-captions, so the subtitles line up with the final cut.
+
 ## Selecting lots of clips
 
 - **Ctrl+click** clips to add them to the selection (Ctrl+click again to take one out).

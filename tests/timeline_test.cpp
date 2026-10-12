@@ -5,6 +5,7 @@
 // Run with: QT_QPA_PLATFORM=offscreen ./build/tests/timeline_test
 
 #include "AutoCaptions.h"
+#include "QuietCut.h"
 #include "ClipInspector.h"
 #include "ClipPresets.h"
 #include "MainWindow.h"
@@ -1310,6 +1311,95 @@ private slots:
             chatty << W { i * 0.25, i * 0.25 + 0.2, "word" + QString::number(i), false };
         for (const TimelineClip& line : AutoCaptions::linesFromWords(chatty))
             QVERIFY(line.title.text.size() <= 42);
+
+        // Urdu ends its sentences with ۔ (not a full stop)
+        QList<W> urdu = { { 0.0, 0.4, QString::fromUtf8("ٹھیک"), true }, { 0.4, 0.8, QString::fromUtf8("ہے۔"), false },
+                          { 0.9, 1.3, QString::fromUtf8("اب"), false } };
+        QCOMPARE(AutoCaptions::linesFromWords(urdu).size(), 2);
+    }
+
+    void findingTheQuietBits()
+    {
+        // 0.6s quiet, 1s talking, 1s pause (with a click in the middle), 1s talking, a 0.3s pause,
+        // 1s talking, then 0.8s quiet at the end
+        QVector<float> levels;
+        auto add = [&](double seconds, float db) {
+            for (int i = 0; i < int(std::lround(seconds / QuietCut::Step)); ++i)
+                levels << db;
+        };
+        add(0.6, -70); add(1, -20); add(0.45, -65); add(0.05, -15); add(0.5, -65);
+        add(1, -22); add(0.3, -65); add(1, -18); add(0.8, -70);
+        const float threshold = QuietCut::autoThreshold(levels);
+        QVERIFY(threshold > -65 && threshold < -22); // between the quiet and the talking
+
+        const auto ranges = QuietCut::quietRanges(levels, threshold, 0.5, 0.1);
+        QCOMPARE(ranges.size(), 3); // the short pause stays
+        auto near = [](double a, double b) { return std::abs(a - b) < 0.011; };
+        QVERIFY(near(ranges[0].first, 0.0) && near(ranges[0].second, 0.5));   // the start goes completely
+        QVERIFY(near(ranges[1].first, 1.7) && near(ranges[1].second, 2.5));   // the click didn't split it
+        QVERIFY(near(ranges[2].first, 5.0) && near(ranges[2].second, 5.7));   // to the very end
+    }
+
+    void cuttingStretchesOutOfEverything()
+    {
+        // Two bits of footage on Video 1 (0-10s, then 10-15s from 20s into its file) and a title over 3-6s
+        TimelineClip a = fakeVideo(30), b = fakeVideo(30), title;
+        a.track = b.track = V1;
+        a.duration = 10;
+        b.start = 10;
+        b.in = 20;
+        b.duration = 5;
+        title.kind = TimelineClip::Kind::Title;
+        title.track = FX1;
+        title.start = 3;
+        title.duration = 3;
+        tl->setClips({ a, b, title });
+
+        tl->removeRanges({ { 2.0, 4.0 }, { 8.0, 11.0 } });
+        QList<TimelineClip> footage, titles;
+        for (const TimelineClip& c : tl->clips())
+            (c.isTitle() ? titles : footage) << c;
+        std::sort(footage.begin(), footage.end(), [](const auto& x, const auto& y) { return x.start < y.start; });
+        QCOMPARE(footage.size(), 3);
+        QCOMPARE(footage[0].start, 0.0);
+        QCOMPARE(footage[0].duration, 2.0);
+        QCOMPARE(footage[1].start, 2.0);
+        QCOMPARE(footage[1].in, 4.0);       // picks up where the cut ended
+        QCOMPARE(footage[1].duration, 4.0); // 4-8s of the file
+        QCOMPARE(footage[2].start, 6.0);
+        QCOMPARE(footage[2].in, 21.0);      // the second clip lost its first second
+        QCOMPARE(footage[2].duration, 4.0);
+        QCOMPARE(titles.size(), 1);
+        QCOMPARE(titles[0].start, 2.0);     // lost the bit that was cut
+        QCOMPARE(titles[0].duration, 2.0);
+        QCOMPARE(tl->duration(), 10.0);
+
+        tl->undo(); // all in one go
+        QCOMPARE(tl->clips().size(), 3);
+        QCOMPARE(tl->duration(), 15.0);
+    }
+
+    void ownSpeechModels()
+    {
+        // Picked with "Add a model file…", or dropped in the models folder: both show up. Ours don't.
+        QStandardPaths::setTestModeEnabled(true); // (keeps this away from your real models)
+        QTemporaryDir dir;
+        const QString picked = dir.filePath("my-finetuned-model.bin");
+        QVERIFY(QFile(picked).open(QIODevice::WriteOnly));
+        AutoCaptions::addOwnModel(picked);
+        QDir().mkpath(AutoCaptions::modelFolder());
+        const QString dropped = QDir(AutoCaptions::modelFolder()).filePath("ggml-medium-test.bin");
+        const QString ours = AutoCaptions::modelPath(AutoCaptions::models().first().id);
+        for (const QString& f : { dropped, ours })
+            QVERIFY(QFile(f).open(QIODevice::WriteOnly));
+        const QStringList own = AutoCaptions::ownModels();
+        QVERIFY(own.contains(picked));
+        QVERIFY(own.contains(QFileInfo(dropped).absoluteFilePath()));
+        QVERIFY(!own.contains(QFileInfo(ours).absoluteFilePath()));
+        QFile::remove(dropped);
+        QFile::remove(ours);
+        QFile(picked).remove(); // gone from disk: no longer offered
+        QVERIFY(!AutoCaptions::ownModels().contains(picked));
     }
 
     void helpPagesAreAllThere()

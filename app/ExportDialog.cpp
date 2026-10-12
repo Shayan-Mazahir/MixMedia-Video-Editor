@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Shayan Mazahir. Part of MixMedia Video Editor, see NOTICE.
 
+#include "AppPaths.h"
 #include "ExportDialog.h"
 
 #include "AppSettings.h"
@@ -154,7 +155,7 @@ ExportDialog::ExportDialog(QSize projectSize, double projectFps, const QString& 
     form->addRow("", m_graphicsCard);
 
     // Subtitles: any mix of the three (remembered for next time)
-    QSettings remembered;
+    QSettings remembered = AppPaths::settings();
     m_burnSubs = new QCheckBox("In the picture (always showing)");
     m_srtSubs = new QCheckBox("As an .srt file next to the video");
     m_trackSubs = new QCheckBox("As a track viewers can switch on and off");
@@ -173,7 +174,7 @@ ExportDialog::ExportDialog(QSize projectSize, double projectFps, const QString& 
     buttons->button(QDialogButtonBox::Ok)->setText("Export");
     connect(buttons, &QDialogButtonBox::helpRequested, [] { HelpWindow::open("export.md"); });
     connect(buttons, &QDialogButtonBox::accepted, this, [this] {
-        QSettings s;
+        QSettings s = AppPaths::settings();
         s.setValue("export/preset", m_preset->currentText());
         if (m_hasSubtitles) {
             s.setValue("export/burnSubtitles", m_burnSubs->isChecked());
@@ -197,7 +198,7 @@ ExportDialog::ExportDialog(QSize projectSize, double projectFps, const QString& 
     layout->addWidget(buttons);
 
     // Start where you left off last time (or plain "same as the project")
-    int last = m_preset->findText(QSettings().value("export/preset").toString());
+    int last = m_preset->findText(AppPaths::settings().value("export/preset").toString());
     m_preset->setCurrentIndex(last >= 0 && last < m_presets.size() ? last : 0);
     applyPreset(m_preset->currentIndex());
 }

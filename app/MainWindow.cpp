@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Shayan Mazahir. Part of MixMedia Video Editor, see NOTICE.
 
+#include "AppPaths.h"
 #include "MainWindow.h"
 #include "AudioPlayer.h"
 #include "AppSettings.h"
 #include "AutoCaptions.h"
+#include "QuietCut.h"
 #include "CardDelegate.h"
 #include "ExportDialog.h"
 #include "HelpWindow.h"
@@ -77,6 +79,7 @@
 #include <QVBoxLayout>
 
 #include <atomic>
+#include <cmath>
 #include <tuple>
 #include <memory>
 #include <vector>
@@ -124,7 +127,7 @@ void showInFileManager(const QString& file)
         return;
 #endif
     // Plan B: just open the folder
-    QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(file).absolutePath()));
+    AppPaths::openFolder(nullptr, QFileInfo(file).absolutePath());
 }
 
 // Draws the thumbnail (or a music note for audio files) centred on a black card.
@@ -269,7 +272,7 @@ MainWindow::~MainWindow()
 
 QString MainWindow::autoSaveFolder()
 {
-    return QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)).filePath("autosave");
+    return AppPaths::autosave();
 }
 
 void MainWindow::autoSave()
@@ -350,7 +353,7 @@ bool MainWindow::offerRecovery()
 
 QStringList MainWindow::recentProjects()
 {
-    return QSettings().value("recent/projects").toStringList();
+    return AppPaths::settings().value("recent/projects").toStringList();
 }
 
 void MainWindow::rememberRecent(const QString& path)
@@ -361,7 +364,7 @@ void MainWindow::rememberRecent(const QString& path)
     QStringList list = recentProjects();
     list.removeAll(full);
     list.prepend(full);
-    QSettings().setValue("recent/projects", list.mid(0, 10));
+    AppPaths::settings().setValue("recent/projects", list.mid(0, 10));
 }
 
 void MainWindow::showWelcome(bool always)
@@ -420,6 +423,7 @@ void MainWindow::buildActions()
                                    [this] { SettingsDialog(this).exec(); });
     QAction* selectAll = make("Select &all", { QKeySequence::SelectAll }, "Select every clip", [this] { m_timeline->selectAll(); });
     QAction* captions = make("Auto-&captions…", {}, "Listen to the video and write the subtitles", &MainWindow::autoCaptions);
+    QAction* quiet = make("Cut out the &quiet bits…", {}, "Find the pauses in the talking and cut them out", &MainWindow::cutQuietBits);
     QAction* freeze = make("&Freeze frame", { QKeySequence("Ctrl+Shift+F") }, "Hold the frame under the playhead for 2 seconds",
                            [this] { m_timeline->freezeFrame(); });
     QAction* split = make("S&plit", { QKeySequence("S"), QKeySequence("Ctrl+B") }, "Split at the playhead", [this] { m_timeline->splitAtPlayhead(); });
@@ -466,7 +470,7 @@ void MainWindow::buildActions()
     edit->addSeparator();
     edit->addActions({ cut, copy, paste, selectAll });
     edit->addSeparator();
-    edit->addActions({ split, del, delGap, detach, freeze, title, captions });
+    edit->addActions({ split, del, delGap, detach, freeze, title, captions, quiet });
     edit->addSeparator();
     edit->addAction(settingsWindow);
     QMenu* view = menuBar()->addMenu("&View");
@@ -1013,7 +1017,7 @@ void MainWindow::closeEvent(QCloseEvent* event)
 
 void MainWindow::restoreLayout()
 {
-    QSettings s;
+    QSettings s = AppPaths::settings();
     if (restoreGeometry(s.value("window/geometry").toByteArray())) {
         m_top->restoreState(s.value("window/panels").toByteArray());
         m_main->restoreState(s.value("window/timeline").toByteArray());
@@ -1037,7 +1041,7 @@ void MainWindow::restoreLayout()
 
 void MainWindow::saveLayout()
 {
-    QSettings s;
+    QSettings s = AppPaths::settings();
     s.setValue("window/geometry", saveGeometry());
     s.setValue("window/panels", m_top->saveState());
     s.setValue("window/timeline", m_main->saveState());
@@ -1283,6 +1287,7 @@ void MainWindow::startPlayback()
         from = 0; // at the end? start again from the top
 
     m_playFrom = from;
+    m_shownFrame = -1;
     m_timeline->setPlayhead(from);
     m_clock.start();
     m_audio->play(from);
@@ -1310,7 +1315,12 @@ void MainWindow::onTick()
         stopPlayback();
     }
     m_timeline->setPlayhead(t);
-    requestPreview();
+    // The timer ticks faster than most videos change frame: only draw when there's a new one
+    const qint64 frame = qint64(std::floor(t * project().fps));
+    if (frame != m_shownFrame) {
+        m_shownFrame = frame;
+        requestPreview();
+    }
     updateTimeLabel();
     m_inspector->setPlayhead(t); // keyframed settings show what they are right now
     m_subtitles->setPlayhead(t);
@@ -1512,6 +1522,24 @@ void MainWindow::autoCaptions()
     if (auto* tabs = findChild<QTabWidget*>())
         tabs->setCurrentWidget(m_subtitles);
     statusBar()->showMessage(QString("Wrote %1 subtitle lines. Have a read through them in the Subtitles tab.").arg(lines.size()), 8000);
+}
+
+void MainWindow::cutQuietBits()
+{
+    if (m_timeline->clips().isEmpty()) {
+        QMessageBox::information(this, "Cut out the quiet bits", "Put something with talking in it on the timeline first!");
+        return;
+    }
+    stopPlayback();
+    const QList<QPair<double, double>> ranges = QuietCut::run(this, m_timeline->renderClips());
+    if (ranges.isEmpty())
+        return;
+    const double before = m_timeline->duration();
+    m_timeline->removeRanges(ranges);
+    m_timeline->zoomToFit();
+    statusBar()->showMessage(QString("Cut out %1 pauses (%2 seconds). Ctrl+Z puts them back.")
+                                 .arg(ranges.size()).arg(int(std::lround(before - m_timeline->duration()))),
+                             8000);
 }
 
 void MainWindow::exportSubtitles()

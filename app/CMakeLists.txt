@@ -33,6 +33,10 @@ qt_add_library(editor_ui STATIC
     RenderClip.h
     SettingsDialog.cpp
     SettingsDialog.h
+    AppPaths.cpp
+    AppPaths.h
+    QuietCut.cpp
+    QuietCut.h
     SubtitleFile.cpp
     SubtitleFile.h
     SubtitlePanel.cpp

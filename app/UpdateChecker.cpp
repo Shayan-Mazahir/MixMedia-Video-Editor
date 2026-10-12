@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Shayan Mazahir. Part of MixMedia Video Editor, see NOTICE.
 
+#include "AppPaths.h"
 #include "UpdateChecker.h"
 
 #include "Theme.h"
@@ -78,7 +79,7 @@ void announce(QWidget* parent, const Release& r, bool byHand)
         if (b == download)
             QDesktopServices::openUrl(QUrl(r.url));
         else if (b == skip)
-            QSettings().setValue("updates/skipped", r.tag);
+            AppPaths::settings().setValue("updates/skipped", r.tag);
         dialog.accept();
     });
     auto* layout = new QVBoxLayout(&dialog);
@@ -86,7 +87,7 @@ void announce(QWidget* parent, const Release& r, bool byHand)
     layout->addWidget(new QLabel("What's new:"));
     layout->addWidget(notes, 1);
     layout->addWidget(buttons);
-    skip->setVisible(!byHand || QSettings().value("updates/skipped").toString() != r.tag);
+    skip->setVisible(!byHand || AppPaths::settings().value("updates/skipped").toString() != r.tag);
     Theme::fit(dialog);
     dialog.exec();
 }
@@ -124,18 +125,18 @@ bool askForChannel(QWidget* parent)
 
 Channel channel()
 {
-    QString c = QSettings().value("updates/channel").toString();
+    QString c = AppPaths::settings().value("updates/channel").toString();
     return c == "pre" ? Channel::PreReleases : c == "off" ? Channel::Off : Channel::Releases;
 }
 
 bool channelChosen()
 {
-    return QSettings().contains("updates/channel");
+    return AppPaths::settings().contains("updates/channel");
 }
 
 void setChannel(Channel c)
 {
-    QSettings().setValue("updates/channel", c == Channel::Off ? "off" : c == Channel::PreReleases ? "pre" : "releases");
+    AppPaths::settings().setValue("updates/channel", c == Channel::Off ? "off" : c == Channel::PreReleases ? "pre" : "releases");
 }
 
 QList<Release> parseReleases(const QByteArray& json)
@@ -183,7 +184,7 @@ void checkAtStartup(QWidget* parent)
         return;
     if (channel() == Channel::Off)
         return;
-    QSettings s;
+    QSettings s = AppPaths::settings();
     const QDateTime now = QDateTime::currentDateTimeUtc();
     const QDateTime last = s.value("updates/lastCheck").toDateTime();
     if (last.isValid() && last.secsTo(now) < DayInSeconds)
@@ -208,7 +209,7 @@ void checkNow(QWidget* parent)
         QMessageBox::warning(parent, "Check for updates", "Couldn't reach GitHub:\n" + error);
         return;
     }
-    QSettings().setValue("updates/lastCheck", QDateTime::currentDateTimeUtc());
+    AppPaths::settings().setValue("updates/lastCheck", QDateTime::currentDateTimeUtc());
     // By hand you get told about anything newer, whatever the setting (pre-releases only if you want them)
     Channel c = channel() == Channel::Off ? Channel::Releases : channel();
     if (auto r = pickUpdate(parseReleases(json), currentVersion(), c, QDateTime::currentDateTimeUtc(), {}, true))

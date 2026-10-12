@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Shayan Mazahir. Part of MixMedia Video Editor, see NOTICE.
 
+#include "AppPaths.h"
 #include "WelcomeScreen.h"
 #include "Icons.h"
 #include "Theme.h"
@@ -34,7 +35,7 @@ QString when(const QDateTime& t)
 
 bool WelcomeScreen::showAtStartup()
 {
-    return QSettings().value("welcome/show", true).toBool();
+    return AppPaths::settings().value("welcome/show", true).toBool();
 }
 
 WelcomeScreen::WelcomeScreen(const QStringList& recent, QWidget* parent)
@@ -77,7 +78,7 @@ WelcomeScreen::WelcomeScreen(const QStringList& recent, QWidget* parent)
     left->addStretch();
     auto* again = new QCheckBox("Show this when MixMedia starts");
     again->setChecked(showAtStartup());
-    connect(again, &QCheckBox::toggled, this, [](bool on) { QSettings().setValue("welcome/show", on); });
+    connect(again, &QCheckBox::toggled, this, [](bool on) { AppPaths::settings().setValue("welcome/show", on); });
     left->addWidget(again);
 
     // ---- Right: recent projects ----

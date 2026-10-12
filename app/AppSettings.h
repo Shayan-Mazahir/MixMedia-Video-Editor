@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "AppPaths.h"
+
 #include <ve/engine.h>
 
 #include <QSettings>
@@ -13,19 +15,19 @@
 namespace AppSettings {
 
 // Off = MixMedia decides everything itself (the default)
-inline bool advancedPerformance() { return QSettings().value("performance/advanced", false).toBool(); }
+inline bool advancedPerformance() { return AppPaths::settings().value("performance/advanced", false).toBool(); }
 
 // CPU threads to use when advanced is on
 inline int threads()
 {
-    return std::clamp(QSettings().value("performance/threads", ve_cpu_threads()).toInt(), 1, ve_cpu_threads());
+    return std::clamp(AppPaths::settings().value("performance/threads", ve_cpu_threads()).toInt(), 1, ve_cpu_threads());
 }
 
-inline bool gpuForExport() { return !advancedPerformance() || QSettings().value("performance/gpuExport", true).toBool(); }
-inline bool gpuForCaptions() { return !advancedPerformance() || QSettings().value("performance/gpuCaptions", true).toBool(); }
+inline bool gpuForExport() { return !advancedPerformance() || AppPaths::settings().value("performance/gpuExport", true).toBool(); }
+inline bool gpuForCaptions() { return !advancedPerformance() || AppPaths::settings().value("performance/gpuCaptions", true).toBool(); }
 
-// Threads for jobs like auto-captions (all of them, or the limit)
-inline int jobThreads() { return advancedPerformance() ? threads() : ve_cpu_threads(); }
+// Threads for jobs like auto-captions (the limit, or 0 = let the engine pick)
+inline int jobThreads() { return advancedPerformance() ? threads() : 0; }
 
 // Tells the engine (call at startup and whenever the settings change)
 inline void apply() { ve_set_thread_limit(advancedPerformance() ? threads() : 0); }

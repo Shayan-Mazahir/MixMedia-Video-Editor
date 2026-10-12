@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Shayan Mazahir. Part of MixMedia Video Editor, see NOTICE.
 
+#include "AppPaths.h"
 #include "SettingsDialog.h"
 #include "AppSettings.h"
 #include "HelpWindow.h"
@@ -11,6 +12,8 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QDialogButtonBox>
+#include <QDir>
+#include <QPushButton>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -55,7 +58,7 @@ SettingsDialog::SettingsDialog(QWidget* parent)
     layout->addWidget(m_details);
     layout->addStretch();
 
-    QSettings s;
+    QSettings s = AppPaths::settings();
     m_advanced->setChecked(AppSettings::advancedPerformance());
     m_threads->setValue(AppSettings::threads());
     m_gpuExport->setChecked(s.value("performance/gpuExport", true).toBool());
@@ -110,10 +113,44 @@ SettingsDialog::SettingsDialog(QWidget* parent)
     }
     appearanceLayout->addStretch();
 
+    // ---- Files: where everything's kept ----
+    auto* files = new QWidget;
+    auto* filesLayout = new QVBoxLayout(files);
+    auto* where = new QLabel(AppPaths::portable()
+                                 ? "Everything MixMedia keeps is in one folder, right next to the program:"
+                                 : "MixMedia's own folder couldn't be written to (it's installed for everyone), "
+                                   "so everything it keeps is in this folder instead:");
+    where->setWordWrap(true);
+    auto* path = new QLabel(QDir::toNativeSeparators(AppPaths::data()));
+    path->setWordWrap(true);
+    path->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    path->setFont(Theme::font(1.0, true));
+    auto* inside = new QLabel("<b>models</b>: speech models for auto-captions (drop your own in here)<br>"
+                              "<b>fonts</b>: extra fonts for titles and subtitles (.ttf, .otf), "
+                              "ready next time MixMedia starts<br>"
+                              "<b>settings.ini</b>: these settings<br>"
+                              "<b>autosave</b>: backups, in case it crashes<br>"
+                              "<b>cache</b>: pictures it can make again (fine to delete)");
+    inside->setWordWrap(true);
+    inside->setProperty("role", "dim");
+    auto* open = new QPushButton("Open the folder");
+    connect(open, &QPushButton::clicked, this, [this] { AppPaths::openFolder(this, AppPaths::data()); });
+    auto* reset = new QLabel(AppPaths::portable() ? "Uninstalling is just deleting the MixMedia folder: this goes with it."
+                                                  : "Delete this folder to reset MixMedia completely.");
+    reset->setWordWrap(true);
+    reset->setProperty("role", "hint");
+    filesLayout->addWidget(where);
+    filesLayout->addWidget(path);
+    filesLayout->addWidget(inside);
+    filesLayout->addWidget(open, 0, Qt::AlignLeft);
+    filesLayout->addWidget(reset);
+    filesLayout->addStretch();
+
     auto* tabs = new QTabWidget;
     tabs->addTab(appearance, "Appearance");
     tabs->addTab(performance, "Performance");
     tabs->addTab(updates, "Updates");
+    tabs->addTab(files, "Files");
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel | QDialogButtonBox::Help);
     connect(buttons, &QDialogButtonBox::helpRequested, [] { HelpWindow::open("settings.md"); });
@@ -143,7 +180,7 @@ void SettingsDialog::refresh()
 
 void SettingsDialog::save()
 {
-    QSettings s;
+    QSettings s = AppPaths::settings();
     s.setValue("performance/advanced", m_advanced->isChecked());
     s.setValue("performance/threads", int(m_threads->value()));
     s.setValue("performance/gpuExport", m_gpuExport->isChecked());

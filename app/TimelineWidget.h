@@ -81,6 +81,10 @@ public:
     // A transition block that isn't on a cut: VE_PART_IN, _OUT or _THROUGH (-1 = it's on a cut)
     int transitionPart(const TimelineClip& transition) const;
 
+    // Cuts these stretches of time out of every track and closes the gaps, so everything
+    // stays in sync (one undo step). For "cut out the quiet bits".
+    void removeRanges(QList<QPair<double, double>> ranges);
+
     // Tracks
     void addTrack(TimelineTrack::Kind kind, int at = -1); // at = index, -1 = the usual spot
     bool removeTrack(int index);                          // only empty ones

@@ -47,10 +47,11 @@ if(MIXMEDIA_CAPTIONS)
         URL https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v1.9.4.tar.gz
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
     FetchContent_MakeAvailable(whisper)
-    # (their code, their warnings: keep our build output readable)
+    # (their code, their warnings: keep our build output readable. Added to their options, not
+    # instead of them: those carry the AVX2/FMA switches that make it fast)
     foreach(target whisper ggml ggml-base ggml-cpu)
         if(TARGET ${target})
-            set_target_properties(${target} PROPERTIES COMPILE_OPTIONS "-w")
+            target_compile_options(${target} PRIVATE -w)
         endif()
     endforeach()
     target_link_libraries(ve_engine PRIVATE whisper)

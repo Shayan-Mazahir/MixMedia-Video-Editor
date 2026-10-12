@@ -36,7 +36,10 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-; Lets people pick "just for me" (no admin needed) or "everyone on this PC"
+; "Just for me" by default (no admin needed). That installs into your own Programs folder, which
+; MixMedia can write to, so its "MixMedia data" folder (settings, models, fonts) sits right next
+; to it. "Everyone on this PC" still works: then the data goes in your AppData instead.
+PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 ChangesAssociations=yes
 
@@ -58,6 +61,14 @@ Root: HKA; Subkey: "Software\Classes\.mixmedia"; ValueType: string; ValueName: "
 Root: HKA; Subkey: "Software\Classes\MixMedia.Project"; ValueType: string; ValueName: ""; ValueData: "MixMedia project"; Flags: uninsdeletekey; Tasks: projects
 Root: HKA; Subkey: "Software\Classes\MixMedia.Project\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\mixmedia.exe,0"; Tasks: projects
 Root: HKA; Subkey: "Software\Classes\MixMedia.Project\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\mixmedia.exe"" ""%1"""; Tasks: projects
+; Settings from before 0.7 lived here (MixMedia moves them out, but just in case)
+Root: HKCU; Subkey: "Software\MixMedia"; Flags: uninsdeletekey dontcreatekey
+
+[UninstallDelete]
+; Uninstalling removes everything, not just the program: the data folder next to it, or the
+; AppData one (for "everyone" installs)
+Type: filesandordirs; Name: "{app}\MixMedia data"
+Type: filesandordirs; Name: "{localappdata}\MixMedia"
 
 [Run]
 Filename: "{app}\mixmedia.exe"; Description: "Open MixMedia now"; Flags: nowait postinstall skipifsilent

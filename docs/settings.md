@@ -27,7 +27,29 @@ These are for this computer, not saved in projects.
 
 ## Auto-save
 
-While you have unsaved changes, MixMedia keeps a backup copy every minute in its own folder. Your project file is only ever changed when you save. If MixMedia crashes or the computer turns off, next time you open it you'll be asked whether you want your work back. Say yes, then save it.
+While you have unsaved changes, MixMedia keeps a backup copy every minute in its **autosave** folder (see below). Your project file is only ever changed when you save. If MixMedia crashes or the computer turns off, next time you open it you'll be asked whether you want your work back. Say yes, then save it.
+
+## Where everything's kept
+
+Everything MixMedia keeps is in one folder called **MixMedia data**, right next to the program:
+
+- **Windows**: inside the MixMedia folder (where `mixmedia.exe` is).
+- **Linux folder download**: inside the MixMedia folder.
+- **Linux AppImage**: next to the `.AppImage` file, so give it a folder of its own.
+
+Inside it:
+
+| | What it is |
+|---|---|
+| `settings.ini` | Your settings |
+| `models` | Speech models for [auto-captions](subtitles.md). Drop your own in here too |
+| `fonts` | Extra fonts for titles and subtitles. Drop `.ttf` or `.otf` files in, and they're there next time MixMedia starts |
+| `autosave` | The backups, in case it crashes |
+| `cache` | Pictures MixMedia can make again (fine to delete) |
+
+**Settings → Files** shows where it is, with a button to open it. To **uninstall**, delete the MixMedia folder and everything goes with it (the Windows uninstaller does the same).
+
+If MixMedia was installed somewhere it can't write to (like *Program Files* when installed "for everyone"), the folder goes in your user folder instead (`AppData\Local\MixMedia` on Windows, `~/.local/share/MixMedia` on Linux). Settings → Files tells you which.
 
 ## Updates
 

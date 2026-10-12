@@ -11,7 +11,7 @@ Open the **Titles** tab on the left and drag a style onto the timeline, or doubl
 Select the title and look in Properties under **Text**:
 
 - Type the words in the box at the top (press Enter for a new line).
-- **Font**, **Bold**, **Italic**, **Size** and **Colour**.
+- **Font**, **Bold**, **Italic**, **Size** and **Colour**. Want a font you don't have? Put the `.ttf` or `.otf` file in the **fonts** folder (Settings → Files → Open the folder) and restart MixMedia.
 - **Line up** left, centre or right, then **Left / right** and **Up / down** to place it.
 - **Letter spacing**: spread the letters out (or squash them).
 - **Outline**: a line around every letter, in any colour.

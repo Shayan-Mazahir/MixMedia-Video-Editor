@@ -17,12 +17,43 @@ Everything lives in the **Subtitles** tab on the left, and on the **Subtitles** 
 Let MixMedia listen to your video and write the subtitles for you:
 
 1. Click **Auto-captions…** (in the Subtitles tab, or **Edit → Auto-captions…**).
-2. Choose what language is spoken (**English** by default, or *Work it out*), and tick **translate** if you'd like English subtitles whatever's being said.
-3. Choose a **quality**. *Good* suits most things. *Fast* is rougher, *Better* and *Best* are more accurate but slower and bigger.
-4. The first time, it asks to download the speech model (once, then it's kept).
-5. When it's done, **read through the lines** in the table. It's good, but not perfect, especially with names.
+2. Choose the language that's **really spoken** (**English** by default, or *Work it out*). This matters: pick English for a video in Urdu and it gets slow and muddled, because it's guessing and translating at once.
+3. Tick **translate** if you'd like the subtitles in English whatever's being said.
+4. Choose a **quality** (see below).
+5. The first time, it asks to download the speech model (once, then it's kept).
+6. When it's done, **read through the lines** in the table. It's good, but not perfect, especially with names.
 
 It listens to the timeline as you've edited it, so the subtitles line up with your cuts. It all happens on your computer: nothing gets uploaded. A long video can take a while (the progress bar tells you roughly how long). You can choose how much of your computer it uses in [Settings](settings.md).
+
+### Which quality?
+
+| Quality | Download | Good for |
+|---|---|---|
+| **Fast** (the usual pick) | 57 MB | Most things: quick, and the smallest download |
+| **Good** | 182 MB | Fewer mistakes, a few times slower |
+| **Great** | 548 MB | Accents, mixed languages, mumbling. Can't translate! |
+| **Best** | 1 GB | The most accurate, and the one to use for **translating** |
+
+Only the one you pick gets downloaded, and MixMedia itself stays the same size. Bigger ones are more accurate but slower, and use more memory while they work (about 0.4 GB for Fast up to 2 GB for Best). Start with Fast, and step up only if it gets too much wrong.
+
+### Getting it more right
+
+- **Names and words**: type names and unusual words that get said (like *MixMedia, Shayan, flexbox*), separated by commas. Whisper reads them first, so it spells them right.
+- **Take extra care**: it weighs up a few guesses for each bit instead of going with the first. More accurate, about twice as slow.
+- **Only listen to the talking** (on by default): a little speech detector finds where people are talking, and only those bits get listened to. Quicker for videos with music or quiet bits, and it stops whisper making up words in the silence.
+
+### Your own models
+
+Any **whisper.cpp model** (a `ggml-….bin` file) works, such as one trained for your language or a bigger one:
+
+- In **Quality**, pick **Add a model file…** and choose it, or
+- click **Models folder** and drop the file in there.
+
+It then shows up in the list as *Your model: …*. The models folder is also where to delete the downloaded ones if you'd like the space back.
+
+### Right-to-left languages
+
+Urdu, Arabic, Persian and Hebrew subtitles come out right to left, with the letters joined up. Word by word lights up the words from the right.
 
 ## How they look
 

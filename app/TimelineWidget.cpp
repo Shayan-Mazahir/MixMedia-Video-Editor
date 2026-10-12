@@ -1430,6 +1430,54 @@ QList<int> TimelineWidget::splitAt(const QList<int>& targets, double at)
     return pieces;
 }
 
+void TimelineWidget::removeRanges(QList<QPair<double, double>> ranges)
+{
+    std::sort(ranges.begin(), ranges.end());
+    ranges.erase(std::remove_if(ranges.begin(), ranges.end(), [](const auto& r) { return r.second - r.first < 0.01; }),
+                 ranges.end());
+    if (ranges.isEmpty())
+        return;
+    pushUndo(m_clips);
+    const double eps = 0.001;
+    // Latest first, so cutting one doesn't move the ones still to go
+    for (auto r = ranges.crbegin(); r != ranges.crend(); ++r) {
+        const double a = r->first, b = r->second, gap = b - a;
+        // Footage gets cut at both ends of the stretch, so the bit in the middle can go
+        for (double at : { b, a }) {
+            QList<int> across;
+            for (int i = 0; i < m_clips.size(); ++i)
+                if (m_clips[i].kind == TimelineClip::Kind::Media && at > m_clips[i].start + eps && at < m_clips[i].end() - eps)
+                    across << i;
+            splitAt(across, at);
+        }
+        for (int i = int(m_clips.size()) - 1; i >= 0; --i) {
+            TimelineClip& c = m_clips[i];
+            if (c.end() <= a + eps) {
+                continue; // before it: untouched
+            } else if (c.start >= b - eps) {
+                c.start -= gap; // after it: slides back
+            } else if (c.start >= a - eps && c.end() <= b + eps) {
+                m_clips.removeAt(i); // all inside it: gone
+            } else {
+                // Titles, effects and subtitles hanging over it just get shorter
+                const double from = std::max(c.start, a), to = std::min(c.end(), b);
+                const double lost = to - from;
+                if (c.start >= a) {
+                    for (WordTime& w : c.words) { // (words keep their place in the line)
+                        w.start = std::max(0.0, w.start - (b - c.start));
+                        w.end = std::max(w.start, w.end - (b - c.start));
+                    }
+                    c.shiftKeys(-(b - c.start));
+                    c.start = a;
+                }
+                c.duration -= lost;
+            }
+        }
+    }
+    select(-1);
+    changed();
+}
+
 void TimelineWidget::setReverse(int index, bool backwards)
 {
     if (index < 0 || index >= m_clips.size() || m_clips[index].reverse == backwards || m_clips[index].isStill())
@@ -2227,18 +2275,26 @@ void TimelineWidget::drawClip(QPainter& p, const TimelineClip& clip, bool select
     if (r.right() < HeaderWidth || r.left() > width())
         return;
 
-    p.save();
-    if (ghost)
-        p.setOpacity(0.45);
-
-    QPainterPath shape;
-    shape.addRoundedRect(r, 6, 6);
     QColor fill = clip.isSubtitle()     ? SubtitleClip
                   : clip.isTitle()      ? TitleClip
                   : clip.isEffect()     ? EffectClip
                   : clip.isTransition() ? TransitionClip
                   : clip.audioOnly()    ? AudioClip
                                         : VideoClip;
+    // Zoomed right out (hundreds of little clips)? A sliver this thin is just a strip of colour,
+    // and skipping the rest keeps the timeline quick
+    if (r.width() < 6 && !ghost) {
+        p.fillRect(r.adjusted(0, 1, 0, -1), selected ? Accent : hovered ? fill.lighter(125) : fill);
+        p.fillRect(QRectF(r.right() - 0.5, r.top() + 1, 0.5, r.height() - 2), QColor(0, 0, 0, 120)); // (where it ends)
+        return;
+    }
+
+    p.save();
+    if (ghost)
+        p.setOpacity(0.45);
+
+    QPainterPath shape;
+    shape.addRoundedRect(r, 6, 6);
     if (hovered)
         fill = fill.lighter(112); // (under the mouse: a little brighter)
     // A soft gradient, lighter at the top

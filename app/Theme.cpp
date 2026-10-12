@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Shayan Mazahir. Part of MixMedia Video Editor, see NOTICE.
 
+#include "AppPaths.h"
 #include "Theme.h"
 
 #include <QApplication>
@@ -49,7 +50,7 @@ const Colours* g_current = &DarkColours;
 // so there are no image files to ship. Drawn big and shown small, so they're sharp on any screen.
 QString makeImages(const Colours& c)
 {
-    QString dir = QDir(QStandardPaths::writableLocation(QStandardPaths::CacheLocation)).filePath(c.dark ? "theme-dark" : "theme-light");
+    QString dir = QDir(AppPaths::cache()).filePath(c.dark ? "theme-dark" : "theme-light");
     QDir().mkpath(dir);
     auto draw = [&](const QString& name, auto&& paint) {
         QImage img(48, 48, QImage::Format_ARGB32_Premultiplied);
@@ -291,13 +292,13 @@ const Colours& colours()
 
 Mode savedMode()
 {
-    QString m = QSettings().value("appearance/theme", "dark").toString();
+    QString m = AppPaths::settings().value("appearance/theme", "dark").toString();
     return m == "light" ? Mode::Light : m == "system" ? Mode::System : Mode::Dark;
 }
 
 void saveMode(Mode mode)
 {
-    QSettings().setValue("appearance/theme", mode == Mode::Light ? "light" : mode == Mode::System ? "system" : "dark");
+    AppPaths::settings().setValue("appearance/theme", mode == Mode::Light ? "light" : mode == Mode::System ? "system" : "dark");
 }
 
 void apply(QApplication& app, Mode mode)

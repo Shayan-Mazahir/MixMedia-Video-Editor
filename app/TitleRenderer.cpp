@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shayan Mazahir. Part of MixMedia Video Editor, see NOTICE.
 
 #include "TitleRenderer.h"
+#include "AppPaths.h"
 
 #include <QCryptographicHash>
 #include <QDir>
@@ -80,7 +81,9 @@ QPainterPath layoutText(const TitleStyle& style, const QFont& font, QSize size, 
             path.addText(QPointF(x, baseline), font, line.text);
             continue;
         }
-        // Word by word, so one of them can be drawn differently
+        // Word by word, so one of them can be drawn differently. Right-to-left writing (Urdu,
+        // Arabic, Hebrew...) starts on the right, so the words go the other way.
+        const bool rightToLeft = line.text.isRightToLeft();
         int at = 0;
         while (at < line.text.size()) {
             while (at < line.text.size() && line.text[at].isSpace())
@@ -90,7 +93,9 @@ QPainterPath layoutText(const TitleStyle& style, const QFont& font, QSize size, 
                 ++end;
             if (end == at)
                 break;
-            QPointF where(x + metrics.horizontalAdvance(line.text.left(at)), baseline);
+            QPointF where(rightToLeft ? x + line.width - metrics.horizontalAdvance(line.text.left(end))
+                                      : x + metrics.horizontalAdvance(line.text.left(at)),
+                          baseline);
             (word == highlightWord ? *lit : path).addText(where, font, line.text.mid(at, end - at));
             ++word;
             at = end;
@@ -166,7 +171,7 @@ QString imageFile(const TitleStyle& style, QSize size, int highlightWord)
     stream << style << size << highlightWord << 4; // (bump the number when the drawing itself changes)
     QString name = QCryptographicHash::hash(key, QCryptographicHash::Sha1).toHex().left(20) + ".png";
 
-    QDir dir(QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + "/titles");
+    QDir dir(QDir(AppPaths::cache()).filePath("titles"));
     dir.mkpath(".");
     QString path = dir.filePath(name);
     if (!QFileInfo::exists(path))

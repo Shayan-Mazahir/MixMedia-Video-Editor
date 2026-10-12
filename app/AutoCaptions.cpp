@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Shayan Mazahir. Part of MixMedia Video Editor, see NOTICE.
 
+#include "AppPaths.h"
 #include "AutoCaptions.h"
 #include "AppSettings.h"
 #include "HelpWindow.h"
@@ -12,14 +13,17 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialog>
+#include <QDesktopServices>
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMessageBox>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -27,9 +31,11 @@
 #include <QPushButton>
 #include <QRadioButton>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QStandardPaths>
 #include <QThread>
 #include <QTimer>
+#include <QUrl>
 #include <QVBoxLayout>
 
 #include <atomic>
@@ -41,21 +47,50 @@ namespace AutoCaptions {
 QList<Model> models()
 {
     return {
-        { "tiny", "Fast (rough, but quick)", 78 },
-        { "base", "Good (the usual pick)", 148 },
-        { "small", "Better (slower)", 488 },
-        { "large-v3-turbo", "Best (slowest, wants a strong computer)", 1624 },
+        { "base-q5_1", "Fast (quick and small, the usual pick)", 57 },
+        { "small-q5_1", "Good (fewer mistakes)", 182 },
+        { "large-v3-turbo-q5_0", "Great (needs a decent computer)", 548 },
+        { "large-v3-q5_0", "Best (most accurate, slowest)", 1031 },
     };
 }
 
 QString modelFolder()
 {
-    return QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)).filePath("models");
+    return AppPaths::models();
 }
 
 QString modelPath(const QString& id)
 {
     return QDir(modelFolder()).filePath("ggml-" + id + ".bin");
+}
+
+QString detectorPath()
+{
+    return QDir(modelFolder()).filePath("ggml-silero-v5.1.2.bin");
+}
+
+QStringList ownModels()
+{
+    QStringList ours;
+    for (const Model& m : models())
+        ours << QFileInfo(modelPath(m.id)).fileName();
+    QStringList found;
+    for (const QFileInfo& f : QDir(modelFolder()).entryInfoList({ "ggml-*.bin" }, QDir::Files, QDir::Name))
+        if (!ours.contains(f.fileName()) && !f.fileName().startsWith("ggml-silero"))
+            found << f.absoluteFilePath();
+    for (const QString& path : AppPaths::settings().value("captions/ownModels").toStringList())
+        if (QFileInfo::exists(path) && !found.contains(path))
+            found << path;
+    return found;
+}
+
+void addOwnModel(const QString& path)
+{
+    QSettings s = AppPaths::settings();
+    QStringList list = s.value("captions/ownModels").toStringList();
+    list.removeAll(path);
+    list.prepend(path);
+    s.setValue("captions/ownModels", list);
 }
 
 QList<TimelineClip> linesFromWords(const QList<Word>& words, int maxChars, double maxSeconds)
@@ -89,11 +124,13 @@ QList<TimelineClip> linesFromWords(const QList<Word>& words, int maxChars, doubl
     for (const Word& w : words) {
         if (!current.isEmpty()) {
             const Word& last = current.last();
-            bool sentenceEnded = last.text.endsWith('.') || last.text.endsWith('?') || last.text.endsWith('!');
+            // (۔ and ؟ end sentences in Urdu, । in Hindi)
+            static const QString enders = QString::fromUtf8(".?!۔؟।");
+            bool sentenceEnded = !last.text.isEmpty() && enders.contains(last.text.back());
             bool pause = w.start - last.end > 0.7;
             bool tooLong = length() + w.text.size() > maxChars || w.end - current.first().start > maxSeconds;
             // (a comma is a nice place to break a long line)
-            bool niceBreak = last.text.endsWith(',') && length() > maxChars * 0.6;
+            bool niceBreak = (last.text.endsWith(',') || last.text.endsWith(QChar(0x060C))) && length() > maxChars * 0.6;
             if (w.startsSentence || sentenceEnded || pause || tooLong || niceBreak)
                 finish();
         }
@@ -110,24 +147,24 @@ QList<TimelineClip> linesFromWords(const QList<Word>& words, int maxChars, doubl
 
 namespace {
 
-// Gets the model file, showing how it's going. False = cancelled or failed (and says why).
-bool download(QWidget* parent, const Model& model)
+// Gets a file from Hugging Face (where whisper's models live), showing how it's going.
+// False = cancelled or failed (and says why, unless `quiet`).
+bool download(QWidget* parent, const QString& url, const QString& target, const QString& what, bool quiet = false)
 {
     QDir().mkpath(modelFolder());
-    const QString target = modelPath(model.id);
     const QString partial = target + ".part";
     QFile file(partial);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        QMessageBox::warning(parent, "Couldn't download", "Couldn't write to " + modelFolder());
+        if (!quiet)
+            QMessageBox::warning(parent, "Couldn't download", "Couldn't write to " + modelFolder());
         return false;
     }
     QNetworkAccessManager network;
-    QNetworkRequest request(QUrl("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-" + model.id + ".bin"));
+    QNetworkRequest request { QUrl(url) };
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
     QNetworkReply* reply = network.get(request);
 
-    QProgressDialog progress(QString("Downloading the %1 speech model (%2 MB)…").arg(model.id).arg(model.megabytes),
-                             "Cancel", 0, 1000, parent);
+    QProgressDialog progress("Downloading " + what + "…", "Cancel", 0, 1000, parent);
     progress.setWindowTitle("Auto-captions");
     progress.setWindowModality(Qt::WindowModal);
     progress.setMinimumDuration(0);
@@ -142,13 +179,13 @@ bool download(QWidget* parent, const Model& model)
     loop.exec();
     file.write(reply->readAll());
     file.close();
-    const bool ok = reply->error() == QNetworkReply::NoError && file.size() > 1000000;
+    const bool ok = reply->error() == QNetworkReply::NoError && file.size() > 100000;
     const QString why = reply->errorString();
     reply->deleteLater();
     progress.reset();
     if (!ok) {
         QFile::remove(partial);
-        if (!progress.wasCanceled())
+        if (!progress.wasCanceled() && !quiet)
             QMessageBox::warning(parent, "Couldn't download", "The download didn't work:\n" + why);
         return false;
     }
@@ -169,7 +206,7 @@ QList<TimelineClip> run(QWidget* parent, const QList<RenderClip>& clips, bool ha
     QDialog dialog(parent);
     dialog.setWindowTitle("Auto-captions");
     dialog.setMinimumWidth(460);
-    QSettings remembered;
+    QSettings remembered = AppPaths::settings();
     auto* language = new QComboBox;
     const QList<QPair<QString, QString>> languages = {
         { "en", "English" }, { "auto", "Work it out (any language)" }, { "ar", "Arabic" }, { "bn", "Bengali" },
@@ -183,12 +220,68 @@ QList<TimelineClip> run(QWidget* parent, const QList<RenderClip>& clips, bool ha
     language->setCurrentIndex(std::max(0, language->findData(remembered.value("captions/language", "en"))));
     auto* translate = new QCheckBox("Write the subtitles in English (translate)");
     translate->setChecked(remembered.value("captions/translate", false).toBool());
+    // Quality: our models, then your own, then a way to add one
     auto* quality = new QComboBox;
-    for (const Model& m : models()) {
-        bool here = QFileInfo::exists(modelPath(m.id));
-        quality->addItem(QString("%1 · %2 MB%3").arg(m.name).arg(m.megabytes).arg(here ? "  ✓ downloaded" : ""), m.id);
-    }
-    quality->setCurrentIndex(std::max(0, quality->findData(remembered.value("captions/model", "base"))));
+    auto fillQuality = [=](const QString& select) {
+        QSignalBlocker hush(quality);
+        quality->clear();
+        const QList<Model> all = models();
+        for (int i = 0; i < all.size(); ++i) {
+            const Model& m = all[i];
+            bool here = QFileInfo::exists(modelPath(m.id));
+            quality->addItem(QString("%1 · %2 MB%3").arg(m.name).arg(m.megabytes).arg(here ? "  ✓ downloaded" : ""),
+                             QString("model:%1").arg(i));
+        }
+        const QStringList own = ownModels();
+        if (!own.isEmpty())
+            quality->insertSeparator(quality->count());
+        for (const QString& path : own)
+            quality->addItem("Your model: " + QFileInfo(path).fileName(), "file:" + path);
+        quality->insertSeparator(quality->count());
+        quality->addItem("Add a model file…", "add");
+        quality->setCurrentIndex(std::max(0, quality->findData(select)));
+    };
+    QString lastModel = remembered.value("captions/model", "model:0").toString(); // (Fast: small and quick)
+    if (!lastModel.contains(':')) // (picked before 0.7: the old names)
+        lastModel = lastModel == "large-v3-turbo" ? "model:2" : lastModel == "small" ? "model:1" : "model:0";
+    fillQuality(lastModel);
+    auto lastPick = std::make_shared<QString>(quality->currentData().toString());
+    QObject::connect(quality, &QComboBox::activated, &dialog, [=, &dialog] {
+        if (quality->currentData() != "add") {
+            *lastPick = quality->currentData().toString();
+            return;
+        }
+        const QString path = QFileDialog::getOpenFileName(&dialog, "Pick a whisper model", QDir::homePath(),
+                                                          "Whisper models (*.bin);;All files (*)");
+        if (!path.isEmpty()) {
+            addOwnModel(path);
+            *lastPick = "file:" + path;
+        }
+        fillQuality(*lastPick);
+    });
+
+    // Turbo was trained without translating, so it makes a mess of it: say so
+    auto* turboWarning = new QLabel("“Great” can't translate (it was never taught to). For subtitles in "
+                                    "English, pick “Best”, or untick translate to get them in the language spoken.");
+    turboWarning->setWordWrap(true);
+    turboWarning->setStyleSheet(QString("color: %1;").arg(QColor(0xf0, 0xa0, 0x30).name()));
+    auto checkTurbo = [=] {
+        const QString pick = quality->currentData().toString();
+        const bool turbo = pick.startsWith("model:") ? models().value(pick.mid(6).toInt()).id.contains("turbo")
+                                                     : pick.contains("turbo", Qt::CaseInsensitive);
+        turboWarning->setVisible(translate->isChecked() && turbo);
+    };
+    QObject::connect(quality, &QComboBox::currentIndexChanged, turboWarning, checkTurbo);
+    QObject::connect(translate, &QCheckBox::toggled, turboWarning, checkTurbo);
+    checkTurbo();
+
+    auto* hint = new QLineEdit(remembered.value("captions/hint").toString());
+    hint->setPlaceholderText("e.g. MixMedia, Shayan, CSS (optional)");
+    hint->setToolTip("Names and unusual words that get said. Whisper reads these first, so it spells them right.");
+    auto* careful = new QCheckBox("Take extra care (more accurate, about twice as slow)");
+    careful->setChecked(remembered.value("captions/careful", false).toBool());
+    auto* onlyTalking = new QCheckBox("Only listen to the talking (skips silence and music: quicker, fewer made-up words)");
+    onlyTalking->setChecked(remembered.value("captions/onlyTalking", true).toBool());
     auto* replaceThem = new QRadioButton("Replace the subtitles that are there");
     auto* addThem = new QRadioButton("Keep them, and add these too");
     replaceThem->setChecked(true);
@@ -197,20 +290,27 @@ QList<TimelineClip> run(QWidget* parent, const QList<RenderClip>& clips, bool ha
     form->addRow("Spoken in", language);
     form->addRow("", translate);
     form->addRow("Quality", quality);
+    form->addRow("", turboWarning);
+    form->addRow("Names and words", hint);
+    form->addRow("", careful);
+    form->addRow("", onlyTalking);
     if (haveSubtitles) {
         auto* choice = new QVBoxLayout;
         choice->addWidget(replaceThem);
         choice->addWidget(addThem);
         form->addRow("Already got some", choice);
     }
-    auto* note = new QLabel("Listens to the whole timeline, as edited, and writes subtitles that line up with it. "
-                            "It all happens on this computer. Have a read through the result in the Subtitles tab, "
-                            "it's good but not perfect.");
+    auto* note = new QLabel("Pick the language that's really spoken: the wrong one makes it slow and muddled. "
+                            "It listens to the whole timeline, as edited, all on this computer. Have a read through "
+                            "the result in the Subtitles tab, it's good but not perfect.");
     note->setWordWrap(true);
     note->setProperty("role", "hint");
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel | QDialogButtonBox::Help);
     buttons->button(QDialogButtonBox::Ok)->setText("Start");
     QObject::connect(buttons, &QDialogButtonBox::helpRequested, [] { HelpWindow::open("subtitles.md"); });
+    QPushButton* folder = buttons->addButton("Models folder", QDialogButtonBox::ResetRole);
+    folder->setToolTip("Where the speech models are kept. Delete them there to free up space, or drop your own in.");
+    QObject::connect(folder, &QPushButton::clicked, &dialog, [&dialog] { AppPaths::openFolder(&dialog, modelFolder()); });
     QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
     QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     auto* layout = new QVBoxLayout(&dialog);
@@ -222,19 +322,44 @@ QList<TimelineClip> run(QWidget* parent, const QList<RenderClip>& clips, bool ha
         return {};
     remembered.setValue("captions/language", language->currentData());
     remembered.setValue("captions/translate", translate->isChecked());
-    remembered.setValue("captions/model", quality->currentData());
+    const QString pick = quality->currentData().toString();
+    if (pick == "add")
+        return {};
+    remembered.setValue("captions/model", pick);
+    remembered.setValue("captions/hint", hint->text().trimmed());
+    remembered.setValue("captions/careful", careful->isChecked());
+    remembered.setValue("captions/onlyTalking", onlyTalking->isChecked());
     *replace = !haveSubtitles || replaceThem->isChecked();
 
     // ---- The speech model (asks before downloading) ----
-    const Model model = models().at(quality->currentIndex());
-    if (!QFileInfo::exists(modelPath(model.id))) {
-        auto answer = QMessageBox::question(
-            parent, "Download the speech model?",
-            QString("Auto-captions need a speech model to listen with. The \"%1\" one is %2 MB, downloaded once "
-                    "from Hugging Face (where whisper's models live) and kept for next time.\n\nDownload it now?")
-                .arg(model.id).arg(model.megabytes));
-        if (answer != QMessageBox::Yes || !download(parent, model))
-            return {};
+    QString modelFile;
+    const bool ownModel = pick.startsWith("file:");
+    if (ownModel) {
+        modelFile = pick.mid(5);
+    } else {
+        const Model model = models().value(pick.mid(6).toInt());
+        modelFile = modelPath(model.id);
+        if (!QFileInfo::exists(modelFile)) {
+            const QString name = model.name.section(" (", 0, 0);
+            auto answer = QMessageBox::question(
+                parent, "Download the speech model?",
+                QString("Auto-captions need a speech model to listen with. The \"%1\" one is %2 MB, downloaded once "
+                        "from Hugging Face (where whisper's models live) and kept for next time.\n\nDownload it now?")
+                    .arg(name).arg(model.megabytes));
+            const QString url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/" + QFileInfo(modelFile).fileName();
+            if (answer != QMessageBox::Yes
+                || !download(parent, url, modelFile, QString("the \"%1\" speech model (%2 MB)").arg(name).arg(model.megabytes)))
+                return {};
+        }
+    }
+    // The speech detector: under a megabyte, so it just comes along (and if it can't, no matter)
+    QString detector;
+    if (onlyTalking->isChecked()) {
+        if (!QFileInfo::exists(detectorPath()))
+            download(parent, "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin",
+                     detectorPath(), "the speech detector (1 MB)", true);
+        if (QFileInfo::exists(detectorPath()))
+            detector = detectorPath();
     }
 
     // ---- Listen (on its own thread, so the window stays responsive) ----
@@ -246,10 +371,12 @@ QList<TimelineClip> run(QWidget* parent, const QList<RenderClip>& clips, bool ha
         int result = VE_OK;
     };
     auto job = std::make_shared<Job>();
-    const QByteArray path = modelPath(model.id).toUtf8();
+    const QByteArray path = modelFile.toUtf8();
     const QByteArray lang = language->currentData().toString().toUtf8();
-    const bool toEnglish = translate->isChecked();
-    QThread* worker = QThread::create([job, clips, path, lang, toEnglish] {
+    const QByteArray vad = detector.toUtf8();
+    const QByteArray words = hint->text().trimmed().toUtf8();
+    const bool toEnglish = translate->isChecked(), extraCare = careful->isChecked();
+    QThread* worker = QThread::create([job, clips, path, lang, toEnglish, vad, words, extraCare] {
         ve_timeline* tl = ve_timeline_create();
         applyClips(tl, clips);
         ve_caption_settings s {};
@@ -258,6 +385,9 @@ QList<TimelineClip> run(QWidget* parent, const QList<RenderClip>& clips, bool ha
         s.translate = toEnglish;
         s.threads = AppSettings::jobThreads();
         s.use_gpu = AppSettings::gpuForCaptions();
+        s.vad_model_path = vad.isEmpty() ? nullptr : vad.constData();
+        s.hint = words.isEmpty() ? nullptr : words.constData();
+        s.careful = extraCare;
         job->result = ve_auto_captions(
             tl, &s,
             [](const ve_caption_word* w, void* user) {
@@ -308,8 +438,10 @@ QList<TimelineClip> run(QWidget* parent, const QList<RenderClip>& clips, bool ha
         return {};
     if (job->result != VE_OK) {
         QMessageBox::warning(parent, "Auto-captions didn't work",
-                             job->result == VE_ERR_OPEN ? "Couldn't load the speech model. Try another quality, "
-                                                          "or delete it from " + modelFolder() + " to download it again."
+                             job->result == VE_ERR_OPEN
+                                 ? (ownModel ? "Couldn't load that model. It needs to be a whisper.cpp model (a ggml .bin file)."
+                                             : "Couldn't load the speech model. Try another quality, or delete it from "
+                                                   + modelFolder() + " to download it again.")
                                                         : QString("Something went wrong: %1").arg(ve_error_string(job->result)));
         return {};
     }

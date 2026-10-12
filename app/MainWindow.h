@@ -80,6 +80,7 @@ private slots:
     void evenOutVolume(int index);
     void importSubtitles();
     void autoCaptions();
+    void cutQuietBits();
     void exportSubtitles();
 
 private:
@@ -123,6 +124,7 @@ private:
     QList<QPair<QAction*, QString>> m_actionIcons; // (redrawn when the theme changes)
     QToolButton* m_startButton = nullptr;
     void refreshIcons();
+    qint64 m_shownFrame = -1; // (while playing: the frame last asked for)
 
     // Fitting the window: panels and toolbar adapt when it's narrow, and the layout's remembered
     void adaptToSize();
