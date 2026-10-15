@@ -10,6 +10,8 @@ This project, for majority is vibe coded, it serves 2 purpose for me:
 
 2. Having a personal video editor that suits my requirnments and is easy to use
 
+Butttttttttttt that does not mean I am just having Claude do everything... I am, have, and will be continuing to fix, improve, and work on things as I go along and learn the C family
+
 ## Download
 
 Grab the latest from the [Releases page](https://github.com/Shayan-Mazahir/MixMedia-Video-Editor/releases/latest):
