@@ -324,6 +324,9 @@ typedef struct ve_caption_settings {
     const char* vad_model_path; /* optional: a speech detector (ggml-silero-*.bin), so only talking gets listened to */
     const char* hint;       /* optional: names and unusual words to expect, e.g. "MixMedia, Shayan" */
     int careful;            /* 1 = weighs up several guesses for each bit (more accurate, slower) */
+    /* optional: called with the latest line it's heard, as it goes (for showing progress).
+       `user` is the one passed to ve_auto_captions. The text is only valid during the call. */
+    void (*heard)(const char* text, void* user);
 } ve_caption_settings;
 
 typedef struct ve_caption_word {

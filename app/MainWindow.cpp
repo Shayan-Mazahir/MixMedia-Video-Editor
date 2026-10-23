@@ -63,6 +63,7 @@
 #include <QPainter>
 #include <QProcess>
 #include <QPropertyAnimation>
+#include <QLocale>
 #include <QProgressDialog>
 #include <QPushButton>
 #include <QResizeEvent>
@@ -181,11 +182,23 @@ MainWindow::MainWindow(QWidget* parent)
     struct Tab {
         const char* name;
         QList<TimelineClip> items;
+        const char* hint; // (how to use them, for anyone who's never tried)
     };
-    for (const Tab& tab : { Tab { "Titles", titlePresets() }, Tab { "Effects", effectPresets() },
-                            Tab { "Transitions", transitionPresets() } }) {
+    for (const Tab& tab : { Tab { "Titles", titlePresets(), "Drag one onto the timeline, or double-click to add it at the playhead." },
+                            Tab { "Effects", effectPresets(), "Drag one onto the timeline: it changes everything below it, for as long as it lasts." },
+                            Tab { "Transitions", transitionPresets(), "Drag one onto a cut between two clips, or double-click to put it on the nearest cut." } }) {
+        auto* page = new QWidget;
+        auto* pageLayout = new QVBoxLayout(page);
+        pageLayout->setContentsMargins(0, 6, 0, 0);
+        pageLayout->setSpacing(4);
+        auto* hint = new QLabel(tab.hint);
+        hint->setWordWrap(true);
+        hint->setProperty("role", "hint");
+        hint->setContentsMargins(8, 0, 8, 0);
         auto* panel = new LibraryPanel(tab.items);
-        library->addTab(panel, tab.name);
+        pageLayout->addWidget(hint);
+        pageLayout->addWidget(panel, 1);
+        library->addTab(page, tab.name);
         connect(panel, &LibraryPanel::addAtPlayhead, m_timeline, &TimelineWidget::addAtPlayhead);
     }
     m_subtitles = new SubtitlePanel(m_timeline);
@@ -373,14 +386,16 @@ void MainWindow::showWelcome(bool always)
     if (!always && !WelcomeScreen::showAtStartup())
         return;
     WelcomeScreen welcome(recentProjects(), this);
-    // A gentle fade in
-    auto* fade = new QPropertyAnimation(&welcome, "windowOpacity", &welcome);
-    welcome.setWindowOpacity(0.0);
-    fade->setDuration(220);
-    fade->setStartValue(0.0);
-    fade->setEndValue(1.0);
-    fade->setEasingCurve(QEasingCurve::OutCubic);
-    QTimer::singleShot(0, fade, [fade] { fade->start(); });
+    // A gentle fade in (not on Wayland: it doesn't let apps fade their windows, and complains if you try)
+    if (!QGuiApplication::platformName().startsWith("wayland")) {
+        auto* fade = new QPropertyAnimation(&welcome, "windowOpacity", &welcome);
+        welcome.setWindowOpacity(0.0);
+        fade->setDuration(220);
+        fade->setStartValue(0.0);
+        fade->setEndValue(1.0);
+        fade->setEasingCurve(QEasingCurve::OutCubic);
+        QTimer::singleShot(0, fade, [fade] { fade->start(); });
+    }
     welcome.exec();
     switch (welcome.choice()) {
     case WelcomeScreen::Choice::Open: openProject(); break;
@@ -417,6 +432,12 @@ void MainWindow::buildActions()
 
     QAction* undo = make("&Undo", { QKeySequence::Undo }, "Undo", [this] { m_timeline->undo(); });
     QAction* redo = make("&Redo", { QKeySequence("Ctrl+Shift+Z"), QKeySequence("Ctrl+Y") }, "Redo", [this] { m_timeline->redo(); });
+    // (the menu says what they'd do, "Undo split"; the toolbar buttons stay short)
+    m_undoAction = undo;
+    m_redoAction = redo;
+    undo->setIconText("Undo");
+    redo->setIconText("Redo");
+    refreshUndo();
     QAction* copy = make("&Copy", { QKeySequence::Copy }, "Copy the selected clips", [this] { m_timeline->copySelected(); });
     QAction* cut = make("Cu&t", { QKeySequence::Cut }, "Cut the selected clips", [this] { m_timeline->cutSelected(); });
     QAction* paste = make("&Paste", { QKeySequence::Paste }, "Paste at the playhead", [this] { m_timeline->paste(); });
@@ -928,8 +949,22 @@ QList<RenderClip> MainWindow::renderClips(QSize titleSize, bool subtitles) const
     }, subtitles);
 }
 
+void MainWindow::refreshUndo()
+{
+    if (!m_undoAction)
+        return;
+    const QString u = m_timeline->undoName(), r = m_timeline->redoName();
+    m_undoAction->setEnabled(!u.isEmpty());
+    m_redoAction->setEnabled(!r.isEmpty());
+    m_undoAction->setText(u.isEmpty() ? QStringLiteral("&Undo") : "&Undo " + u);
+    m_redoAction->setText(r.isEmpty() ? QStringLiteral("&Redo") : "&Redo " + r);
+    m_undoAction->setToolTip(u.isEmpty() ? QStringLiteral("Nothing to undo") : QString("Undo %1 (%2)").arg(u, m_undoAction->shortcut().toString(QKeySequence::NativeText)));
+    m_redoAction->setToolTip(r.isEmpty() ? QStringLiteral("Nothing to redo") : QString("Redo %1 (%2)").arg(r, m_redoAction->shortcut().toString(QKeySequence::NativeText)));
+}
+
 void MainWindow::onClipsChanged()
 {
+    refreshUndo();
     Project p = project();
     QList<RenderClip> clips = renderClips(QSize(p.width, p.height));
     m_renderer->setClips(clips);
@@ -957,6 +992,7 @@ void MainWindow::refreshInspector()
     }
     else
         m_inspector->showClip(-1, {});
+    adaptToSize(); // (different settings showing might need a bit more room)
 }
 
 // ---- Projects ----
@@ -1086,7 +1122,9 @@ void MainWindow::adaptToSize()
     }
     // ...and the side panels slim down a bit
     const bool tiny = width() < 1000, compact = width() < 1280;
-    m_inspector->setMinimumWidth(tiny ? 230 : compact ? 290 : 350);
+    // (never narrower than what the selected clip's settings need, or they'd get cut off)
+    const int needs = m_inspector->layout() ? m_inspector->layout()->minimumSize().width() : 0;
+    m_inspector->setMinimumWidth(std::max(tiny ? 230 : compact ? 290 : 350, needs));
     m_library->setMinimumWidth(tiny ? 150 : compact ? 190 : 220);
 }
 
@@ -1411,25 +1449,37 @@ void MainWindow::exportVideo()
         ve_timeline_destroy(tl);
     });
 
-    QProgressDialog progress("Exporting…", "Cancel", 0, 1000, this);
+    const QString fileName = QFileInfo(dialog.path()).fileName();
+    const double videoLength = m_timeline->duration();
+    QProgressDialog progress(QString("Exporting %1…").arg(fileName), "Cancel", 0, 1000, this);
     progress.setWindowTitle("Export");
     progress.setWindowModality(Qt::WindowModal);
     progress.setMinimumDuration(0);
-    progress.setMinimumWidth(380);
+    progress.setMinimumWidth(420);
     connect(&progress, &QProgressDialog::canceled, this, [job] { job->cancel = true; });
 
     QElapsedTimer clock;
     clock.start();
     QTimer poll;
     connect(&poll, &QTimer::timeout, this, [&] {
-        double done = job->done;
+        const double done = job->done;
+        const double spent = clock.elapsed() / 1000.0;
         progress.setValue(int(done * 1000));
-        QString eta;
-        if (done > 0.02) {
-            double left = clock.elapsed() / 1000.0 * (1.0 - done) / done;
-            eta = QString(" · about %1 left").arg(formatDuration(left));
+        // What's going on, how long's left, how fast, and how big it's got so far
+        QStringList lines { QString("<b>Exporting %1</b>").arg(fileName.toHtmlEscaped()) };
+        lines << (done > 0.02 ? QString("About %1 left").arg(formatDuration(spent * (1.0 - done) / done))
+                              : QStringLiteral("Getting going…")); // (the bar shows the percentage)
+        QStringList extra;
+        if (done > 0.02 && spent > 1.0 && videoLength > 0) {
+            const double speed = done * videoLength / spent;
+            extra << (speed >= 1.0 ? QString("%1× faster than real time").arg(speed, 0, 'f', 1)
+                                   : QString("%1× real time").arg(speed, 0, 'f', 2));
         }
-        progress.setLabelText(QString("Exporting… %1%%2").arg(int(done * 100)).arg(eta));
+        if (const qint64 bytes = QFileInfo(dialog.path()).size(); bytes > 0)
+            extra << QString("%1 so far").arg(QLocale().formattedDataSize(bytes, 1, QLocale::DataSizeTraditionalFormat));
+        if (!extra.isEmpty())
+            lines << QString("<span style='color:%1;'>%2</span>").arg(Theme::colours().dim.name(), extra.join(" · "));
+        progress.setLabelText(lines.join("<br>"));
     });
 
     QEventLoop loop;
@@ -1449,21 +1499,34 @@ void MainWindow::exportVideo()
             QMessageBox::warning(this, "Couldn't save the subtitle file", error);
     }
     if (job->result == VE_OK) {
+        const QString how = job->encoder == "copy" ? QStringLiteral("an instant copy")
+                          : job->encoder == "libx264" || job->encoder == "gif" || job->encoder == "sound"
+                              ? QStringLiteral("the CPU")
+                              : QStringLiteral("the graphics card");
         QMessageBox box(QMessageBox::Information, "Export done",
-                        QString("Saved %1\n(took %2, using %3)")
-                            .arg(QFileInfo(dialog.path()).fileName(),
-                                 formatDuration(clock.elapsed() / 1000.0),
-                                 job->encoder == "copy"      ? QStringLiteral("instant copy")
-                                 : job->encoder == "libx264" || job->encoder == "gif" || job->encoder == "sound"
-                                     ? QStringLiteral("the CPU")
-                                                             : QStringLiteral("the graphics card")),
-                        QMessageBox::Ok, this);
+                        QString("<b>Done! %1</b><br><br>Saved <b>%2</b> (%3).<br>It took %4, using %5.")
+                            .arg(Theme::emoji("🎉", ""), fileName.toHtmlEscaped(),
+                                 QLocale().formattedDataSize(QFileInfo(dialog.path()).size(), 1, QLocale::DataSizeTraditionalFormat),
+                                 formatDuration(clock.elapsed() / 1000.0), how),
+                        QMessageBox::NoButton, this);
+        box.setTextFormat(Qt::RichText);
+        QPushButton* play = box.addButton("Play it", QMessageBox::ActionRole);
         QPushButton* show = box.addButton("Show in folder", QMessageBox::ActionRole);
+        box.addButton("Close", QMessageBox::AcceptRole);
+        box.setDefaultButton(play);
         box.exec();
-        if (box.clickedButton() == show)
+        if (box.clickedButton() == play)
+            QDesktopServices::openUrl(QUrl::fromLocalFile(dialog.path()));
+        else if (box.clickedButton() == show)
             showInFileManager(dialog.path());
     } else if (job->result != VE_ERR_CANCELLED) {
-        QMessageBox::warning(this, "Export failed", QString("Export failed: %1").arg(ve_error_string(job->result)));
+        // Say what went wrong, and what's worth trying
+        QString tip = "Try exporting again. If it keeps happening, ";
+        tip += dialog.useGraphicsCard() && !dialog.instant()
+                   ? "untick \"Use the graphics card\" in the export window (some graphics drivers are fussy)."
+                   : "check there's enough free space where you're saving it, and that you can save files there.";
+        QMessageBox::warning(this, "Export didn't work",
+                             QString("The export stopped: %1.\n\n%2").arg(ve_error_string(job->result), tip));
     }
 }
 

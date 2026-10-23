@@ -60,6 +60,8 @@ Select a video and press **Ctrl+D** (or *Detach audio*) to put its sound on its 
 
 **Ctrl + mouse wheel** zooms around the mouse, **Ctrl+=** / **Ctrl+-** zoom in and out, and **Ctrl+0** fits the whole thing. The mouse wheel on its own scrolls sideways.
 
+More tracks than fit? Scroll **up and down** with the mouse wheel over the track names on the left (or **Shift + wheel** anywhere), or the scrollbar on the right. Dragging a clip near the top or bottom edge scrolls too, so you can drop it on a track that's out of sight.
+
 ## Undo
 
-**Ctrl+Z** undoes, **Ctrl+Shift+Z** (or **Ctrl+Y**) redoes. Pretty much everything can be undone.
+**Ctrl+Z** undoes, **Ctrl+Shift+Z** (or **Ctrl+Y**) redoes. Pretty much everything can be undone, and the **Edit** menu tells you what it'll undo (like *Undo split* or *Undo move*). Hover over the Undo button for the same.

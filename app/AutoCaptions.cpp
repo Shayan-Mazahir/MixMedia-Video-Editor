@@ -137,11 +137,20 @@ QList<TimelineClip> linesFromWords(const QList<Word>& words, int maxChars, doubl
         current << w;
     }
     finish();
-    // Linger a moment after the last word (easier to read), but never into the next line
+    // Linger a moment after the last word (easier to read), and stay up at least a second so a
+    // short line like "Yes." doesn't just flash past. Never into the next line, though.
+    const double MinOnScreen = 1.0;
     for (int i = 0; i < lines.size(); ++i) {
+        const double untilNext = i + 1 < lines.size() ? lines[i + 1].start - lines[i].start : 1e9;
         double room = i + 1 < lines.size() ? lines[i + 1].start - lines[i].end() : 1.0;
         lines[i].duration += std::clamp(room, 0.0, 0.4);
+        lines[i].duration = std::max(lines[i].duration, std::min(MinOnScreen, untilNext));
     }
+    // Whisper's timing for a line's last word can run a touch past where the next line starts:
+    // one subtitle at a time, so it stops where the next begins
+    for (int i = 0; i + 1 < lines.size(); ++i)
+        if (lines[i].end() > lines[i + 1].start)
+            lines[i].duration = std::max(0.3, lines[i + 1].start - lines[i].start);
     return lines;
 }
 
@@ -368,6 +377,7 @@ QList<TimelineClip> run(QWidget* parent, const QList<RenderClip>& clips, bool ha
         std::atomic<bool> cancel { false };
         std::mutex lock;
         QList<Word> words;
+        QString heard; // the latest line, to show while it works
         int result = VE_OK;
     };
     auto job = std::make_shared<Job>();
@@ -388,6 +398,11 @@ QList<TimelineClip> run(QWidget* parent, const QList<RenderClip>& clips, bool ha
         s.vad_model_path = vad.isEmpty() ? nullptr : vad.constData();
         s.hint = words.isEmpty() ? nullptr : words.constData();
         s.careful = extraCare;
+        s.heard = [](const char* text, void* user) {
+            auto* j = static_cast<Job*>(user);
+            std::lock_guard guard(j->lock);
+            j->heard = QString::fromUtf8(text).trimmed();
+        };
         job->result = ve_auto_captions(
             tl, &s,
             [](const ve_caption_word* w, void* user) {
@@ -408,7 +423,12 @@ QList<TimelineClip> run(QWidget* parent, const QList<RenderClip>& clips, bool ha
     progress.setWindowTitle("Auto-captions");
     progress.setWindowModality(Qt::WindowModal);
     progress.setMinimumDuration(0);
-    progress.setMinimumWidth(380);
+    progress.setMinimumWidth(460);
+    auto* label = new QLabel; // (wraps long lines, rather than the window growing)
+    label->setWordWrap(true);
+    label->setMinimumHeight(QFontMetrics(label->font()).lineSpacing() * 4);
+    label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    progress.setLabel(label);
     QObject::connect(&progress, &QProgressDialog::canceled, [job] { job->cancel = true; });
     QElapsedTimer clock;
     clock.start();
@@ -420,6 +440,20 @@ QList<TimelineClip> run(QWidget* parent, const QList<RenderClip>& clips, bool ha
         if (done > 0.15) {
             int left = int(clock.elapsed() / 1000.0 * (1.0 - done) / done);
             text += QString(" about %1:%2 left").arg(left / 60).arg(left % 60, 2, 10, QChar('0'));
+        }
+        // What it's just heard, so you can see it working (and spot straight away if it's the
+        // wrong language, rather than finding out at the end)
+        QString heard;
+        {
+            std::lock_guard guard(job->lock);
+            heard = job->heard;
+        }
+        text = "<b>" + text.toHtmlEscaped() + "</b>";
+        if (!heard.isEmpty()) {
+            if (heard.size() > 90)
+                heard = "…" + heard.right(89);
+            text += QString("<br><span style='color:%1;'>Just heard: “%2”</span>")
+                        .arg(Theme::colours().dim.name(), heard.toHtmlEscaped());
         }
         progress.setLabelText(text);
     });

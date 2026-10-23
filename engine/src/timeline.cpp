@@ -556,18 +556,44 @@ void Timeline::drawTransition(Slot& a, Slot& b, double t, int w, int h, uint8_t*
             drawSlot(b, t, w, h, canvas, bgra, second);
         }
         return;
-    case Transition::WipeLeft: // the new clip sweeps in from the right
-        second.clipX0 = int(std::lround(w * (1 - e)));
-        break;
-    case Transition::WipeRight:
-        second.clipX1 = int(std::lround(w * e));
-        break;
-    case Transition::WipeUp:
-        second.clipY0 = int(std::lround(h * (1 - e)));
-        break;
-    case Transition::WipeDown:
-        second.clipY1 = int(std::lround(h * e));
-        break;
+    case Transition::WipeLeft:  // the new clip sweeps in from the right
+    case Transition::WipeRight: // ...from the left
+    case Transition::WipeUp:    // ...from the bottom
+    case Transition::WipeDown: { // ...from the top
+        // A soft edge rather than a razor-sharp line: draw the new clip over a copy of the old,
+        // then blend the two along a feathered band that travels across
+        drawSlot(a, t, w, h, canvas, bgra, first);
+        m_wipe.assign(canvas, canvas + size_t(w) * h * 4);
+        drawSlot(b, t, w, h, m_wipe.data(), bgra, second);
+        const Transition kind = b.clip.transition;
+        const bool across = kind == Transition::WipeLeft || kind == Transition::WipeRight;
+        const int length = across ? w : h;
+        const double feather = std::max(2.0, length * 0.04); // half the soft band
+        // Where the middle of the band is: starts just off one side, ends just off the other
+        const bool fromEnd = kind == Transition::WipeLeft || kind == Transition::WipeUp;
+        const double travel = (length + 2 * feather) * e - feather;
+        const double edge = fromEnd ? length - travel : travel;
+        auto newness = [&](int at) { // 0 = all old clip, 1 = all new
+            double v = (at + 0.5 - (edge - feather)) / (2 * feather);
+            v = std::clamp(fromEnd ? v : 1 - v, 0.0, 1.0);
+            return int(std::lround(smooth(v) * 256));
+        };
+        std::vector<int> weights(static_cast<size_t>(length));
+        for (int i = 0; i < length; ++i)
+            weights[size_t(i)] = newness(i);
+        for (int y = 0; y < h; ++y) {
+            uint8_t* dst = canvas + size_t(y) * w * 4;
+            const uint8_t* src = m_wipe.data() + size_t(y) * w * 4;
+            for (int x = 0; x < w; ++x, dst += 4, src += 4) {
+                const int k = weights[size_t(across ? x : y)];
+                if (k == 0)
+                    continue;
+                for (int c = 0; c < 4; ++c)
+                    dst[c] = uint8_t(dst[c] + (((src[c] - dst[c]) * k) >> 8));
+            }
+        }
+        return;
+    }
     case Transition::SlideLeft: // the new clip pushes the old one out to the left
         first.dx = -e * w;
         second.dx = (1 - e) * w;

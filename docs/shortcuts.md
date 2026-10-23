@@ -35,6 +35,7 @@
 | Ctrl+= / Ctrl+- | Zoom in / out |
 | Ctrl+0 | Fit everything |
 | Ctrl + mouse wheel | Zoom around the mouse |
+| Shift + mouse wheel | Scroll up and down through the tracks |
 
 ## Files
 

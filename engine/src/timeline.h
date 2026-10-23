@@ -242,6 +242,7 @@ private:
     uint64_t m_audioTick = 0;
     std::vector<uint8_t> m_scratch;
     std::vector<uint8_t> m_layer; // one clip's picture, while its effects get applied
+    std::vector<uint8_t> m_wipe;  // the incoming clip during a wipe, before it's blended in along the soft edge
     std::vector<uint32_t> m_rowScratch; // one row of a moving/zooming picture
     EffectsScratch m_fx;
     std::vector<float> m_mix;

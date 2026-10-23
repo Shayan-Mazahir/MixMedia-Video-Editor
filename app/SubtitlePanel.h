@@ -34,6 +34,7 @@ private:
 
     TimelineWidget* m_timeline;
     QTableWidget* m_table;
+    class QLabel* m_emptyNote; // (shown while there aren't any lines)
     QList<int> m_lines; // timeline clip index for each row
     QPushButton* m_export;
     QPushButton* m_delete;

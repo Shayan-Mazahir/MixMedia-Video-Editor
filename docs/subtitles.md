@@ -23,7 +23,7 @@ Let MixMedia listen to your video and write the subtitles for you:
 5. The first time, it asks to download the speech model (once, then it's kept).
 6. When it's done, **read through the lines** in the table. It's good, but not perfect, especially with names.
 
-It listens to the timeline as you've edited it, so the subtitles line up with your cuts. It all happens on your computer: nothing gets uploaded. A long video can take a while (the progress bar tells you roughly how long). You can choose how much of your computer it uses in [Settings](settings.md).
+It listens to the timeline as you've edited it, so the subtitles line up with your cuts. It all happens on your computer: nothing gets uploaded. A long video can take a while: the progress window tells you roughly how long, and shows what it's **just heard** as it goes, so you can tell straight away if it's understanding (and cancel if you picked the wrong language). You can choose how much of your computer it uses in [Settings](settings.md).
 
 ### Which quality?
 

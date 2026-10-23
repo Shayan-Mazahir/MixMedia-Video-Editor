@@ -49,6 +49,10 @@ public:
     static QList<WordTime> wordTimes(const TimelineClip& line);
     double duration() const;
 
+    // What Ctrl+Z and Ctrl+Shift+Z would do right now ("split", "move"...; empty = nothing to do)
+    QString undoName() const { return m_undo.isEmpty() ? QString() : m_undo.last().what; }
+    QString redoName() const { return m_redo.isEmpty() ? QString() : m_redo.last().what; }
+
     double playhead() const { return m_playhead; }
     void setPlayhead(double sec); // moves it without firing playheadMoved
 
@@ -138,7 +142,9 @@ private:
     struct Snapshot {
         QList<TimelineClip> clips;
         QList<TimelineTrack> tracks;
+        QString what = "change"; // what it undoes, for the Edit menu ("Undo split")
     };
+    void labelUndo(const QString& what) { if (!m_undo.isEmpty()) m_undo.last().what = what; }
 
     // Turning seconds into pixels and back
     double secToX(double sec) const;
@@ -180,7 +186,7 @@ private:
     // Edits
     void dragMove(const QPoint& pos);
     void dragTrim(const QPoint& pos, bool left);
-    void pushUndo(const QList<TimelineClip>& state);
+    void pushUndo(const QList<TimelineClip>& state, const QString& what = "change");
     QList<int> partnersOf(int index) const; // itself + its detached sound (or the video it came from)
     QList<int> withPartners(const QList<int>& clips) const;
     QList<int> splitAt(const QList<int>& targets, double at); // returns the new right-hand pieces
@@ -228,13 +234,23 @@ private:
     QElapsedTimer m_lastEditClock;
 
     double m_pixelsPerSecond = 50.0;
-    double m_scrollX = 0.0;
+    // Zooming glides rather than jumps: to this many pixels per second, keeping the time at
+    // anchorX on screen where it is
+    void zoomTo(double pixelsPerSecond, double anchorX, bool glide);
+    class QVariantAnimation* m_zoomGlide = nullptr;
+    double m_zoomTarget = 0.0;
+    double m_scrollX = 0.0; // (pixels scrolled sideways)
     double m_playhead = 0.0;
 
     Drag m_drag = Drag::None;
     double m_grabOffset = 0.0; // where on the clip you grabbed it (seconds)
 
     QScrollBar* m_scrollBar;
+    // Up and down, for when there are more tracks than fit
+    QScrollBar* m_vScrollBar;
+    int m_scrollY = 0;
+    int maxScrollY() const;
+    void ensureTrackVisible(int track);
     QPixmap m_cache; // the timeline minus the playhead
     bool m_cacheDirty = true;
 

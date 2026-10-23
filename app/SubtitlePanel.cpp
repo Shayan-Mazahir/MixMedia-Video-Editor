@@ -52,6 +52,15 @@ SubtitlePanel::SubtitlePanel(TimelineWidget* timeline, QWidget* parent)
     m_table->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed
                              | QAbstractItemView::AnyKeyPressed);
     layout->addWidget(m_table, 1);
+    // Nothing yet? Say how to get some, in the middle of the empty table
+    m_emptyNote = new QLabel("No subtitles yet.\n\nClick + Line to write one, or let Auto-captions… listen and write them all for you.");
+    m_emptyNote->setWordWrap(true);
+    m_emptyNote->setAlignment(Qt::AlignCenter);
+    m_emptyNote->setProperty("role", "dim");
+    m_emptyNote->setAttribute(Qt::WA_TransparentForMouseEvents);
+    auto* over = new QVBoxLayout(m_table->viewport());
+    over->setContentsMargins(24, 0, 24, 0);
+    over->addWidget(m_emptyNote);
 
     auto* bottom = new QHBoxLayout;
     m_delete = new QPushButton("Delete");
@@ -97,6 +106,7 @@ void SubtitlePanel::refresh()
     m_lines = m_timeline->subtitleLines();
     const int row = m_table->currentRow();
     m_table->setRowCount(int(m_lines.size()));
+    m_emptyNote->setVisible(m_lines.isEmpty());
     for (int r = 0; r < m_lines.size(); ++r) {
         const TimelineClip& c = m_timeline->clips().at(m_lines[r]);
         const QString cells[] = { SubtitleFile::formatTime(c.start, false), SubtitleFile::formatTime(c.end(), false), c.title.text };

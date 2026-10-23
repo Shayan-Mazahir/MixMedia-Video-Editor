@@ -124,6 +124,9 @@ private:
     QList<QPair<QAction*, QString>> m_actionIcons; // (redrawn when the theme changes)
     QToolButton* m_startButton = nullptr;
     void refreshIcons();
+    void refreshUndo(); // "Undo split", greyed out when there's nothing to undo
+    QAction* m_undoAction = nullptr;
+    QAction* m_redoAction = nullptr;
     qint64 m_shownFrame = -1; // (while playing: the frame last asked for)
 
     // Fitting the window: panels and toolbar adapt when it's narrow, and the layout's remembered

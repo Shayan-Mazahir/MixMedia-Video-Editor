@@ -4,6 +4,8 @@
 
 Click a clip on the timeline and its settings show up in **Properties** on the right. Every slider has a box next to it for typing an exact number, and **double-clicking a slider** puts it back to normal.
 
+There are a lot of settings, so they come in sections. **Click a section's title to fold it away** (or open it again). The ones most people only need now and then (crop, zoom & pan, green screen, animation) start folded, and MixMedia remembers how you leave them.
+
 ## Speed
 
 - **Play at**: below 1× is slow motion, above is fast forward (0.1× to 10×). Use *Presets…* for the usual ones.

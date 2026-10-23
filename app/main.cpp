@@ -17,6 +17,9 @@
 
 int main(int argc, char** argv)
 {
+    // The video driver library (VA-API) chats away in the terminal; only let it speak up for real errors
+    if (qEnvironmentVariableIsEmpty("LIBVA_MESSAGING_LEVEL"))
+        qputenv("LIBVA_MESSAGING_LEVEL", "1");
     QApplication app(argc, argv);
     QApplication::setApplicationName("MixMedia Video Editor");
     QApplication::setOrganizationName("MixMedia");

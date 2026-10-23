@@ -31,4 +31,6 @@ If your project has subtitles, choose whether they go in the picture, in an `.sr
 
 ## Where it goes
 
-Pick the file name and folder at the top. When it's done, **Show in folder** takes you straight to it.
+Pick the file name and folder at the top.
+
+While it exports, you can see how long's left, how fast it's going (like "4× faster than real time") and how big the file is so far. **Cancel** stops it any time. When it's done, **Play it** opens the video in your usual player, and **Show in folder** takes you straight to it.

@@ -267,8 +267,10 @@ void ExportDialog::refresh()
     m_form->setRowVisible(6, mp4);              // Quality
     m_form->setRowVisible(7, mp4);              // Graphics card
     m_form->setRowVisible(8, m_hasSubtitles);   // Subtitles
-    m_burnSubs->setVisible(picture);
-    m_trackSubs->setVisible(mp4);
+    // (only when the row's showing: a checkbox shown on its own in a hidden row ends up stuck in the corner)
+    m_burnSubs->setVisible(m_hasSubtitles && picture);
+    m_srtSubs->setVisible(m_hasSubtitles);
+    m_trackSubs->setVisible(m_hasSubtitles && mp4);
     // Subtitles in the picture (or as a track) mean redrawing every frame, so no instant copy
     if (m_hasSubtitles && mp4 && (m_burnSubs->isChecked() || m_trackSubs->isChecked()) && m_instant->isChecked())
         m_normal->setChecked(true);

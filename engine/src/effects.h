@@ -64,6 +64,7 @@ struct Effects {
 struct EffectsScratch {
     std::vector<uint8_t> temp;
     std::vector<uint8_t> blurred;
+    std::vector<uint8_t> small; // a shrunk copy, for big blurs
     std::vector<uint8_t> vignetteMask;
     int maskW = 0, maskH = 0;
     float maskAmount = -1;

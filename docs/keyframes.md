@@ -15,8 +15,7 @@ Play it back and the clip moves between the two. Add as many as you like.
 
 - **◆** means there's a keyframe right at the playhead (click it to remove it).
 - **◇** in teal means the setting has keyframes, just not here.
-- **◀ ◆** and **◆ ▶** jump to the previous and next keyframe.
-- **Clear keyframes** removes them all (the clip stays how it looks at the playhead).
+- Once a clip has keyframes, a **Keyframes** row appears at the top of Position & size: **◀** and **▶** jump to the previous and next one, and **Clear** removes them all (the clip stays how it looks at the playhead).
 - Little yellow diamonds on the clip in the timeline show where its keyframes are.
 
 Keyframes stick to the bit of footage they're on, so splitting, trimming or speeding up a clip doesn't mess them up.

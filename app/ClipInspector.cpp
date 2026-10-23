@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Shayan Mazahir. Part of MixMedia Video Editor, see NOTICE.
 
+#include "AppPaths.h"
 #include "ClipInspector.h"
 #include "EffectNames.h"
 #include "HelpWindow.h"
 #include "NumberSlider.h"
+#include "Theme.h"
 
 #include <ve/engine.h>
 
@@ -20,7 +22,9 @@
 #include <QLabel>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QMouseEvent>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -84,10 +88,24 @@ ClipInspector::ClipInspector(QWidget* parent)
     }));
     outer->addLayout(heading);
 
-    m_empty = new QLabel("Click a clip on the timeline to tweak it here.");
-    m_empty->setWordWrap(true);
-    m_empty->setProperty("role", "dim");
-    m_empty->setAlignment(Qt::AlignTop | Qt::AlignLeft);
+    // Nothing picked yet: say what goes here, plus a few handy things worth knowing
+    m_empty = new QWidget;
+    auto* emptyLayout = new QVBoxLayout(m_empty);
+    emptyLayout->setContentsMargins(0, 0, 0, 0);
+    auto* what = new QLabel("Click a clip on the timeline and everything you can change about it shows up here: "
+                            "speed, look, size, words, sound...");
+    auto* tips = new QLabel("<p><b>Handy to know</b></p>"
+                            "<p>S splits whatever's under the playhead<br>"
+                            "Ctrl+Z undoes pretty much anything<br>"
+                            "Click a section's title to fold it away<br>"
+                            "F1 opens the help, any time</p>");
+    tips->setProperty("role", "dim"); // (greyed by the theme, so it follows light and dark)
+    for (QLabel* l : { what, tips }) {
+        l->setWordWrap(true);
+        emptyLayout->addWidget(l);
+    }
+    emptyLayout->insertSpacing(1, 14); // (a gap between the two)
+    emptyLayout->addStretch();
     outer->addWidget(m_empty);
 
     // Lots of settings, so they scroll
@@ -255,12 +273,15 @@ ClipInspector::ClipInspector(QWidget* parent)
     m_keyNav = new QWidget;
     auto* navRow = new QHBoxLayout(m_keyNav);
     navRow->setContentsMargins(0, 0, 0, 0);
-    m_prevKey = new QPushButton("◀ ◆");
-    m_nextKey = new QPushButton("◆ ▶");
-    m_clearKeys = makeResetButton("Clear keyframes");
+    // (only shows up once there are keyframes to jump between)
+    auto* keysLabel = new QLabel("Keyframes");
+    m_prevKey = new QPushButton("◀");
+    m_nextKey = new QPushButton("▶");
+    m_clearKeys = makeResetButton("Clear");
     m_prevKey->setToolTip("Jump to the previous keyframe");
     m_nextKey->setToolTip("Jump to the next keyframe");
     m_clearKeys->setToolTip("Remove every keyframe from this clip (the settings stay where they are at the playhead)");
+    navRow->addWidget(keysLabel);
     navRow->addWidget(m_prevKey);
     navRow->addWidget(m_nextKey);
     navRow->addStretch();
@@ -517,6 +538,33 @@ ClipInspector::ClipInspector(QWidget* parent)
             m_speed->setValue(s);
     });
 
+    // Sections: click a title to fold it away. The ones most people only need now and then
+    // start folded, so the panel isn't a mile long.
+    const QList<QPair<QGroupBox*, QString>> sections = {
+        { m_titleBox, "text" }, { m_speedBox, "speed" }, { m_effectsBox, "effects" }, { m_placeBox, "position" },
+        { m_cropBox, "crop" }, { m_zoomBox, "zoom" }, { m_keyBox, "greenscreen" }, { m_soundBox, "sound" },
+        { m_transitionBox, "transition" }, { m_animBox, "animation" }, { m_fadeBox, "fade" },
+    };
+    for (const auto& [box, name] : sections) {
+        box->setObjectName(name);
+        box->setProperty("heading", box->title());
+        box->installEventFilter(this);
+        m_sections << box;
+    }
+    m_folded = AppPaths::settings()
+                   .value("properties/folded", QStringList { "crop", "zoom", "greenscreen", "animation" })
+                   .toStringList();
+
+    // Narrow panel or big text: everything squeezes in rather than getting cut off at the edge.
+    // Rows put their control under the label when there's no room beside it, and drop-downs
+    // shrink instead of insisting on fitting their longest choice.
+    for (QFormLayout* form : m_panel->findChildren<QFormLayout*>())
+        form->setRowWrapPolicy(QFormLayout::WrapLongRows);
+    for (QComboBox* box : m_panel->findChildren<QComboBox*>()) {
+        box->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+        box->setMinimumContentsLength(6);
+    }
+
     showClip(-1, {});
 }
 
@@ -556,6 +604,7 @@ void ClipInspector::showClip(int index, const TimelineClip& clip, int part)
 {
     m_index = index;
     m_clip = clip;
+    m_part = part;
     m_empty->setVisible(index < 0);
     m_scroll->setVisible(index >= 0);
     if (index < 0)
@@ -572,7 +621,7 @@ void ClipInspector::showClip(int index, const TimelineClip& clip, int part)
     m_info->setText(info);
 
     m_titleBox->setVisible(clip.isTitle() || clip.isSubtitle());
-    m_titleBox->setTitle(clip.isSubtitle() ? "Subtitle" : "Text");
+    m_titleBox->setProperty("heading", clip.isSubtitle() ? "Subtitle" : "Text");
     m_subtitleRows->setVisible(clip.isSubtitle());
     if (clip.isSubtitle()) {
         m_ownStyle->setChecked(clip.ownStyle);
@@ -609,11 +658,12 @@ void ClipInspector::showClip(int index, const TimelineClip& clip, int part)
     m_keyBox->setVisible(video);
     m_freeze->setVisible(video);
     m_effectsBox->setVisible(video || clip.isEffect());
-    m_strength->setVisible(clip.isEffect());
+    // (the whole row, label too: just hiding the slider would leave "Strength" on its own)
+    if (auto* form = qobject_cast<QFormLayout*>(m_effectsBox->layout()))
+        form->setRowVisible(m_strength, clip.isEffect());
     m_placeBox->setVisible(clip.showsVideo());
     m_cropBox->setVisible(clip.showsVideo());
     m_zoomBox->setVisible(clip.showsVideo());
-    m_keyNav->setVisible(clip.showsVideo() || clip.playsAudio());
     m_soundBox->setVisible(clip.hasAudio && clip.audioOn);
     m_transitionBox->setVisible(clip.isTransition());
     m_fadeBox->setVisible(!clip.isTransition() && !clip.isSubtitle());
@@ -671,6 +721,13 @@ void ClipInspector::showClip(int index, const TimelineClip& clip, int part)
     m_fadeOut->setValue(clip.fadeOut);
     m_loading = false;
     refreshKeys();
+
+    foldSections();
+
+    // Never narrower than what's showing needs (so nothing gets cut off at the edge, whatever
+    // the text size); the window makes room by taking it from the other panels
+    m_panel->layout()->activate();
+    m_scroll->setMinimumWidth(m_panel->minimumSizeHint().width() + m_scroll->verticalScrollBar()->sizeHint().width() + 4);
 }
 
 void ClipInspector::setPlayhead(double sec)
@@ -707,6 +764,8 @@ void ClipInspector::refreshKeys()
     m_prevKey->setEnabled(any);
     m_nextKey->setEnabled(any);
     m_clearKeys->setEnabled(any);
+    if (!m_folded.contains("position")) // (a folded section stays folded)
+        m_keyNav->setVisible(any && (m_clip.showsVideo() || m_clip.playsAudio()));
     m_loading = false;
 }
 
@@ -999,4 +1058,53 @@ void ClipInspector::refreshColorButton()
     show(m_shadowColor, m_clip.title.shadowColor);
     show(m_boxColor, m_clip.title.boxColor);
     show(m_highlight, m_clip.title.highlight);
+}
+
+// ---- Folding sections away ----
+
+void ClipInspector::foldSections()
+{
+    for (QGroupBox* box : m_sections) {
+        const bool folded = m_folded.contains(box->objectName());
+        box->setTitle(QString(folded ? "▶  " : "▼  ") + box->property("heading").toString());
+        if (folded) {
+            for (QWidget* inside : box->findChildren<QWidget*>(Qt::FindDirectChildrenOnly))
+                inside->hide();
+            box->setFixedHeight(QFontMetrics(box->font()).height() + 22); // (just the title)
+        } else {
+            box->setMinimumHeight(0);
+            box->setMaximumHeight(QWIDGETSIZE_MAX);
+        }
+    }
+}
+
+void ClipInspector::toggleSection(QGroupBox* section)
+{
+    const QString name = section->objectName();
+    if (!m_folded.removeOne(name))
+        m_folded << name;
+    AppPaths::settings().setValue("properties/folded", m_folded);
+    if (!m_folded.contains(name)) {
+        // Opening up: show it all, then let the clip hide whatever doesn't apply to it
+        for (QWidget* inside : section->findChildren<QWidget*>(Qt::FindDirectChildrenOnly))
+            inside->show();
+        m_spotControls->setVisible(m_zoomPreset->currentData() == "spot");
+        showClip(m_index, m_clip, m_part);
+    } else {
+        foldSections();
+    }
+}
+
+bool ClipInspector::eventFilter(QObject* watched, QEvent* event)
+{
+    auto* box = qobject_cast<QGroupBox*>(watched);
+    if (box && m_sections.contains(box) && event->type() == QEvent::MouseButtonPress) {
+        // Only the title strip at the top folds it (clicks anywhere else are for the settings)
+        const int titleHeight = QFontMetrics(box->font()).height() + 18;
+        if (static_cast<QMouseEvent*>(event)->position().y() <= titleHeight) {
+            toggleSection(box);
+            return true;
+        }
+    }
+    return QWidget::eventFilter(watched, event);
 }

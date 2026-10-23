@@ -17,6 +17,7 @@
 #include <QContextMenuEvent>
 #include <QMenu>
 #include <QScrollBar>
+#include <QVariantAnimation>
 
 #include <algorithm>
 #include <cmath>
@@ -78,6 +79,14 @@ TimelineWidget::TimelineWidget(QWidget* parent)
     connect(m_scrollBar, &QScrollBar::valueChanged, this, [this](int value) {
         if (value != int(m_scrollX)) {
             m_scrollX = value;
+            invalidate();
+        }
+    });
+    // ...and one down the right, when there are more tracks than fit
+    m_vScrollBar = new QScrollBar(Qt::Vertical, this);
+    connect(m_vScrollBar, &QScrollBar::valueChanged, this, [this](int value) {
+        if (value != m_scrollY) {
+            m_scrollY = value;
             invalidate();
         }
     });
@@ -164,6 +173,7 @@ void TimelineWidget::addSubtitles(const QList<TimelineClip>& lines, bool replace
         m_clips << line;
     }
     m_undo << before;
+    labelUndo("subtitles");
     if (m_undo.size() > MaxUndo)
         m_undo.removeFirst();
     m_redo.clear();
@@ -348,8 +358,9 @@ void TimelineWidget::upgradeOldProject()
 void TimelineWidget::addTrack(TimelineTrack::Kind kind, int at)
 {
     m_undo << Snapshot { m_clips, m_tracks };
+    labelUndo("new track");
     m_redo.clear();
-    insertTrack(kind, at);
+    ensureTrackVisible(insertTrack(kind, at)); // (so you can see where it went)
     changed();
 }
 
@@ -406,6 +417,7 @@ bool TimelineWidget::removeTrack(int index)
         return false; // always keep at least one of each
 
     m_undo << Snapshot { m_clips, m_tracks };
+    labelUndo("remove track");
     m_redo.clear();
     m_tracks.removeAt(index);
     for (TimelineClip& c : m_clips)
@@ -418,6 +430,8 @@ bool TimelineWidget::removeTrack(int index)
 void TimelineWidget::selectClip(int index)
 {
     select(index >= 0 && index < m_clips.size() ? index : -1);
+    if (m_selected >= 0)
+        ensureTrackVisible(m_clips[m_selected].track); // (picked from somewhere else, like the subtitles list)
     invalidate();
 }
 
@@ -548,6 +562,7 @@ void TimelineWidget::paste()
         return;
     settleGroup(pasted);
     m_undo << before;
+    labelUndo("paste");
     if (m_undo.size() > MaxUndo)
         m_undo.removeFirst();
     m_redo.clear();
@@ -566,7 +581,7 @@ void TimelineWidget::updateClip(int index, const TimelineClip& clip, const QStri
     QString key = QString::number(index) + ':' + what;
     bool sameEdit = key == m_lastEdit && m_lastEditClock.isValid() && m_lastEditClock.elapsed() < 1500;
     if (!sameEdit)
-        pushUndo(m_clips);
+        pushUndo(m_clips, "change");
     m_lastEdit = key;
     m_lastEditClock.restart();
 
@@ -601,7 +616,7 @@ void TimelineWidget::setTransition(int index, int type)
         int before = -1, after = -1;
         if (!m_clips[i].isTransition() || !transitionPair(m_clips[i], &before, &after) || after != index)
             continue;
-        pushUndo(m_clips);
+        pushUndo(m_clips, "transition");
         if (type == 0) {
             undoOverlap(i);
             m_clips.removeAt(i);
@@ -622,6 +637,7 @@ void TimelineWidget::setTransition(int index, int type)
     if (!applyTransition(makeTransitionClip(type), m_clips[index].start, -1))
         return;
     m_undo << Snapshot { before, tracksBefore };
+    labelUndo("transition");
     m_redo.clear();
     select(int(m_clips.size()) - 1);
     changed();
@@ -687,7 +703,7 @@ void TimelineWidget::setClipSpeed(int index, double speed)
     double newDuration = std::min(before.sourceSpan() / speed, (before.sourceDuration - before.in) / speed);
     double change = newDuration - before.duration;
 
-    pushUndo(m_clips);
+    pushUndo(m_clips, "speed change");
     QList<int> group = partnersOf(index);
     QList<int> tracks;
     for (int i : group) {
@@ -733,7 +749,7 @@ void TimelineWidget::detachAudio()
     if (sound.track < 0)
         return; // no room anywhere, leave things alone
 
-    pushUndo(m_clips);
+    pushUndo(m_clips, "detach audio");
     m_clips[m_selected].audioOn = false;
     m_clips << sound;
     select(int(m_clips.size()) - 1);
@@ -763,6 +779,7 @@ void TimelineWidget::addAtPlayhead(const TimelineClip& prototype)
         if (!applyTransition(clip, m_playhead, -1))
             return;
         m_undo << before;
+    labelUndo("transition");
         m_redo.clear();
         select(int(m_clips.size()) - 1);
         changed();
@@ -793,6 +810,7 @@ void TimelineWidget::addAtPlayhead(const TimelineClip& prototype)
         }
     }
     m_undo << before; // one undo step, even if a track got added
+    labelUndo("add");
     if (m_undo.size() > MaxUndo)
         m_undo.removeFirst();
     m_redo.clear();
@@ -836,8 +854,17 @@ void TimelineWidget::syncScrollBar()
     m_scrollBar->setPageStep(int(visible));
     m_scrollBar->setSingleStep(int(visible / 20) + 1);
     m_scrollBar->setValue(int(m_scrollX));
-    m_scrollBar->setGeometry(HeaderWidth, height() - 12, width() - HeaderWidth, 12);
+    const int maxY = maxScrollY();
+    const int vWidth = maxY > 0 ? 12 : 0;
+    m_scrollBar->setGeometry(HeaderWidth, height() - 12, width() - HeaderWidth - vWidth, 12);
     m_scrollBar->setVisible(maxScroll > 0);
+    QSignalBlocker quietToo(m_vScrollBar);
+    m_vScrollBar->setRange(0, maxY);
+    m_vScrollBar->setPageStep(std::max(1, height() - RulerHeight));
+    m_vScrollBar->setSingleStep(FxTrackHeight / 2);
+    m_vScrollBar->setValue(m_scrollY);
+    m_vScrollBar->setGeometry(width() - 12, RulerHeight, 12, height() - RulerHeight - 12);
+    m_vScrollBar->setVisible(maxY > 0);
 }
 
 QList<double> TimelineWidget::cutPoints() const
@@ -855,7 +882,7 @@ void TimelineWidget::appendClips(const QList<TimelineClip>& clips)
 {
     if (clips.isEmpty())
         return;
-    pushUndo(m_clips);
+    pushUndo(m_clips, "add");
     bool wasEmpty = m_clips.isEmpty();
 
     for (TimelineClip clip : clips) {
@@ -900,7 +927,7 @@ int TimelineWidget::trackHeight(int track) const
 
 int TimelineWidget::trackTop(int track) const
 {
-    int y = RulerHeight;
+    int y = RulerHeight - m_scrollY; // (the ruler stays put, the tracks slide under it)
     for (int i = 0; i < track; ++i)
         y += trackHeight(i);
     return y;
@@ -1398,7 +1425,7 @@ void TimelineWidget::splitAtPlayhead()
     if (targets.isEmpty())
         return;
 
-    pushUndo(m_clips);
+    pushUndo(m_clips, "split");
     QList<int> pieces = splitAt(targets, m_playhead);
     select(pieces.first()); // the right-hand piece, ready to delete or move
     changed();
@@ -1437,7 +1464,7 @@ void TimelineWidget::removeRanges(QList<QPair<double, double>> ranges)
                  ranges.end());
     if (ranges.isEmpty())
         return;
-    pushUndo(m_clips);
+    pushUndo(m_clips, "cut out the quiet bits");
     const double eps = 0.001;
     // Latest first, so cutting one doesn't move the ones still to go
     for (auto r = ranges.crbegin(); r != ranges.crend(); ++r) {
@@ -1482,7 +1509,7 @@ void TimelineWidget::setReverse(int index, bool backwards)
 {
     if (index < 0 || index >= m_clips.size() || m_clips[index].reverse == backwards || m_clips[index].isStill())
         return;
-    pushUndo(m_clips);
+    pushUndo(m_clips, "backwards");
     for (int i : partnersOf(index))
         m_clips[i].reverse = backwards;
     changed();
@@ -1532,6 +1559,7 @@ void TimelineWidget::freezeFrame(double seconds)
     m_clips << still;
 
     m_undo << before;
+    labelUndo("freeze frame");
     if (m_undo.size() > MaxUndo)
         m_undo.removeFirst();
     m_redo.clear();
@@ -1559,7 +1587,7 @@ void TimelineWidget::deleteSelected(bool closeGap)
 {
     if (m_selection.isEmpty())
         return;
-    pushUndo(m_clips);
+    pushUndo(m_clips, "delete");
 
     // Rightmost first, so closing one gap doesn't move the ones still to go
     QList<int> left = m_selection;
@@ -1624,8 +1652,8 @@ void TimelineWidget::undo()
 {
     if (m_undo.isEmpty())
         return;
-    m_redo << Snapshot { m_clips, m_tracks };
     Snapshot s = m_undo.takeLast();
+    m_redo << Snapshot { m_clips, m_tracks, s.what };
     m_clips = s.clips;
     m_tracks = s.tracks;
     select(-1);
@@ -1636,17 +1664,17 @@ void TimelineWidget::redo()
 {
     if (m_redo.isEmpty())
         return;
-    m_undo << Snapshot { m_clips, m_tracks };
     Snapshot s = m_redo.takeLast();
+    m_undo << Snapshot { m_clips, m_tracks, s.what };
     m_clips = s.clips;
     m_tracks = s.tracks;
     select(-1);
     changed();
 }
 
-void TimelineWidget::pushUndo(const QList<TimelineClip>& state)
+void TimelineWidget::pushUndo(const QList<TimelineClip>& state, const QString& what)
 {
-    m_undo << Snapshot { state, m_tracks };
+    m_undo << Snapshot { state, m_tracks, what };
     if (m_undo.size() > MaxUndo)
         m_undo.removeFirst();
     m_redo.clear();
@@ -1675,11 +1703,36 @@ void TimelineWidget::zoomBy(double factor)
     double anchorX = secToX(m_playhead);
     if (anchorX < HeaderWidth || anchorX > width())
         anchorX = HeaderWidth;
-    double anchor = xToSec(anchorX);
-    m_pixelsPerSecond = std::clamp(m_pixelsPerSecond * factor, MinZoom, MaxZoom);
-    m_scrollX = anchor * m_pixelsPerSecond - (anchorX - HeaderWidth);
-    clampScroll();
-    invalidate();
+    // (pressed again mid-glide? carry on from where it was heading)
+    const bool gliding = m_zoomGlide && m_zoomGlide->state() == QAbstractAnimation::Running;
+    zoomTo((gliding ? m_zoomTarget : m_pixelsPerSecond) * factor, anchorX, true);
+}
+
+void TimelineWidget::zoomTo(double pixelsPerSecond, double anchorX, bool glide)
+{
+    const double anchor = xToSec(anchorX);
+    m_zoomTarget = std::clamp(pixelsPerSecond, MinZoom, MaxZoom);
+    auto apply = [this, anchor, anchorX](double pps) {
+        m_pixelsPerSecond = pps;
+        m_scrollX = anchor * m_pixelsPerSecond - (anchorX - HeaderWidth);
+        clampScroll();
+        invalidate();
+    };
+    if (!m_zoomGlide) {
+        m_zoomGlide = new QVariantAnimation(this);
+        m_zoomGlide->setDuration(160);
+        m_zoomGlide->setEasingCurve(QEasingCurve::OutCubic);
+    }
+    m_zoomGlide->stop();
+    disconnect(m_zoomGlide, &QVariantAnimation::valueChanged, this, nullptr);
+    if (!glide) {
+        apply(m_zoomTarget);
+        return;
+    }
+    connect(m_zoomGlide, &QVariantAnimation::valueChanged, this, [apply](const QVariant& v) { apply(v.toDouble()); });
+    m_zoomGlide->setStartValue(m_pixelsPerSecond);
+    m_zoomGlide->setEndValue(m_zoomTarget);
+    m_zoomGlide->start();
 }
 
 void TimelineWidget::clampScroll()
@@ -1687,6 +1740,28 @@ void TimelineWidget::clampScroll()
     double visible = width() - HeaderWidth;
     double maxScroll = std::max(0.0, duration() * m_pixelsPerSecond - visible * 0.5);
     m_scrollX = std::clamp(m_scrollX, 0.0, maxScroll);
+    m_scrollY = std::clamp(m_scrollY, 0, maxScrollY());
+}
+
+int TimelineWidget::maxScrollY() const
+{
+    // All the tracks, plus room so the bottom one isn't hidden behind the sideways scrollbar
+    int all = 0;
+    for (int i = 0; i < m_tracks.size(); ++i)
+        all += trackHeight(i);
+    return std::max(0, all + 14 - (height() - RulerHeight));
+}
+
+void TimelineWidget::ensureTrackVisible(int track)
+{
+    if (track < 0 || track >= m_tracks.size())
+        return;
+    const int top = trackTop(track), bottom = top + trackHeight(track);
+    if (top < RulerHeight)
+        m_scrollY -= RulerHeight - top;
+    else if (bottom > height() - 14)
+        m_scrollY += bottom - (height() - 14);
+    clampScroll();
 }
 
 void TimelineWidget::keepPlayheadVisible()
@@ -1784,6 +1859,7 @@ void TimelineWidget::dropClips(const QList<TimelineClip>& clips, const QPoint& p
     }
 
     m_undo << before;
+    labelUndo("add");
     m_redo.clear();
     select(int(m_clips.size()) - 1);
     if (wasEmpty)
@@ -1875,6 +1951,20 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event)
 {
     QPoint pos = event->position().toPoint();
 
+    // Dragging a clip (or a selection box) near the top or bottom: scroll that way, to reach
+    // tracks that are out of sight
+    if ((m_drag == Drag::Move || m_drag == Drag::Box) && maxScrollY() > 0) {
+        const int edge = 24;
+        const int before = m_scrollY;
+        if (pos.y() < RulerHeight + edge)
+            m_scrollY -= 8;
+        else if (pos.y() > height() - 12 - edge)
+            m_scrollY += 8;
+        clampScroll();
+        if (m_scrollY != before)
+            invalidate();
+    }
+
     switch (m_drag) {
     case Drag::None: {
         // Just hovering: show the resize arrows over clip edges
@@ -1950,12 +2040,13 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent* event)
     m_group.clear();
     m_followers.clear();
 
+    const bool trimmed = m_drag == Drag::TrimLeft || m_drag == Drag::TrimRight;
     bool edited = m_drag == Drag::Move || m_drag == Drag::TrimLeft || m_drag == Drag::TrimRight;
     m_drag = Drag::None;
     unsetCursor();
 
     if (edited && !sameLayout(m_clips, m_beforeDrag)) {
-        pushUndo(m_beforeDrag);
+        pushUndo(m_beforeDrag, trimmed ? "trim" : "move");
         changed();
     } else {
         invalidate();
@@ -1967,11 +2058,18 @@ void TimelineWidget::wheelEvent(QWheelEvent* event)
     double x = event->position().x();
 
     if (event->modifiers() & Qt::ControlModifier) {
-        // Zoom around the mouse so the spot under it stays put
-        double anchor = xToSec(x);
-        double factor = event->angleDelta().y() > 0 ? 1.25 : 0.8;
-        m_pixelsPerSecond = std::clamp(m_pixelsPerSecond * factor, MinZoom, MaxZoom);
-        m_scrollX = anchor * m_pixelsPerSecond - (x - HeaderWidth);
+        // Zoom around the mouse so the spot under it stays put. A mouse wheel clicks in steps
+        // (each one glides); a trackpad sends lots of tiny ones (each zooms a tiny bit, straight away).
+        const int delta = event->angleDelta().y();
+        const bool notch = std::abs(delta) >= 120 && event->pixelDelta().isNull();
+        const bool gliding = m_zoomGlide && m_zoomGlide->state() == QAbstractAnimation::Running;
+        zoomTo((gliding ? m_zoomTarget : m_pixelsPerSecond) * std::pow(1.25, delta / 120.0), x, notch);
+        event->accept();
+        return;
+    } else if (event->modifiers() & Qt::ShiftModifier || x < HeaderWidth) {
+        // Over the track names (or with Shift): up and down through the tracks
+        const QPoint d = event->angleDelta();
+        m_scrollY -= (d.y() != 0 ? d.y() : d.x()) / 3;
     } else {
         int delta = event->angleDelta().x() != 0 ? event->angleDelta().x() : event->angleDelta().y();
         m_scrollX -= delta;
@@ -2253,6 +2351,7 @@ void TimelineWidget::showAddTrackMenu(const QPoint& globalPos)
     menu.addAction("FX track (titles, effects, transitions)", this, [this] { addTrack(K::Fx); });
     menu.addAction("Subtitles track", this, [this] {
         m_undo << Snapshot { m_clips, m_tracks };
+    labelUndo("new track");
         m_redo.clear();
         insertTrack(K::Subtitles, 0);
         changed();

@@ -25,6 +25,8 @@ constexpr int Rate = 16000; // what whisper listens at
 struct Job {
     ve_progress_fn progress;
     void* user;
+    void (*heard)(const char*, void*) = nullptr;
+    int shown = 0; // (segments already passed to `heard`)
     std::atomic<bool> cancelled { false };
     bool report(double done)
     {
@@ -171,6 +173,7 @@ int ve_auto_captions(ve_timeline* tl, const ve_caption_settings* settings, ve_ca
     if (!tl || !settings || !settings->model_path || !word)
         return VE_ERR_ARG;
     Job job { progress, user };
+    job.heard = settings->heard;
 
     // 1. The finished sound, mixed down to one channel at 16kHz (the first 10% of the bar)
     const double duration = tl->timeline.duration();
@@ -275,8 +278,21 @@ int ve_auto_captions(ve_timeline* tl, const ve_caption_settings* settings, ve_ca
     p.suppress_blank = true;
     p.suppress_nst = true;       // no "[Music]" and friends (mostly)
     p.print_progress = p.print_realtime = p.print_timestamps = p.print_special = false;
-    p.progress_callback = [](whisper_context*, whisper_state*, int percent, void* j) {
-        static_cast<Job*>(j)->report(0.12 + 0.88 * percent / 100.0);
+    p.progress_callback = [](whisper_context*, whisper_state* state, int percent, void* j) {
+        auto* job = static_cast<Job*>(j);
+        job->report(0.12 + 0.88 * percent / 100.0);
+        // Pass on the latest line heard, so you can see it working (and spot if the language is wrong)
+        const int n = whisper_full_n_segments_from_state(state);
+        if (job->heard && n > job->shown) {
+            for (int s = n - 1; s >= job->shown; --s) {
+                const std::string text = whisper_full_get_segment_text_from_state(state, s);
+                if (!bracketed(text)) {
+                    job->heard(text.c_str(), job->user);
+                    break;
+                }
+            }
+            job->shown = n;
+        }
     };
     p.progress_callback_user_data = &job;
     p.abort_callback = [](void* j) { return static_cast<Job*>(j)->cancelled.load(); };

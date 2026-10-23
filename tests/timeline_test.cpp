@@ -15,6 +15,10 @@
 #include "SubtitlePanel.h"
 #include "TitleRenderer.h"
 #include "UpdateChecker.h"
+#include "ExportDialog.h"
+#include <QComboBox>
+#include <QLabel>
+#include <QGroupBox>
 #include "SelfUpdate.h"
 #include "ProjectFile.h"
 #include "TimelineWidget.h"
@@ -36,8 +40,11 @@
 #include <QSlider>
 #include <QSignalSpy>
 #include <QProcess>
+#include <QCheckBox>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QWheelEvent>
+#include <QScrollBar>
 #include <QTableWidget>
 #include <QTimer>
 #include <QToolButton>
@@ -133,6 +140,22 @@ private slots:
         tl->appendClips({ song });
         QCOMPARE(clip(1).track, A1);
         QCOMPARE(clip(1).start, 0.0); // the audio track was empty
+    }
+
+    void undoSaysWhatItWillUndo()
+    {
+        QCOMPARE(tl->undoName(), QString("add")); // (the test starts by adding a clip)
+        tl->setPlayhead(4.0);
+        tl->splitAtPlayhead();
+        QCOMPARE(tl->undoName(), QString("split"));
+        drag(tl, { xAt(6.0), trackY(V1) }, { xAt(7.0), trackY(V1) }); // move the right-hand piece
+        QCOMPARE(tl->undoName(), QString("move"));
+        tl->undo();
+        QCOMPARE(tl->undoName(), QString("split"));
+        QCOMPARE(tl->redoName(), QString("move")); // and redo knows what it's bringing back
+        tl->redo();
+        QCOMPARE(tl->undoName(), QString("move"));
+        QCOMPARE(tl->redoName(), QString());
     }
 
     void splitThenUndoRedo()
@@ -1314,6 +1337,19 @@ private slots:
         for (const TimelineClip& line : AutoCaptions::linesFromWords(chatty))
             QVERIFY(line.title.text.size() <= 42);
 
+        // A quick one-word line stays up long enough to read (a second), unless the next one's sooner
+        QList<W> quick = { { 1.0, 1.2, "Yes.", true }, { 5.0, 5.3, "Okay.", true }, { 5.6, 5.9, "Then", true } };
+        const auto quickLines = AutoCaptions::linesFromWords(quick);
+        QCOMPARE(quickLines.size(), 3);
+        QVERIFY(quickLines[0].duration >= 1.0 - 1e-9);
+        QVERIFY(quickLines[1].end() <= quickLines[2].start + 1e-9); // (squeezed: the next line comes first)
+
+        // A last word whose timing runs past the next line's start: no overlapping subtitles
+        QList<W> overlap = { { 0.0, 2.0, "First", true }, { 2.0, 4.4, "bit.", false }, { 4.3, 5.0, "Second", true } };
+        const auto noOverlap = AutoCaptions::linesFromWords(overlap);
+        QCOMPARE(noOverlap.size(), 2);
+        QVERIFY(noOverlap[0].end() <= noOverlap[1].start + 1e-9);
+
         // Urdu ends its sentences with ۔ (not a full stop)
         QList<W> urdu = { { 0.0, 0.4, QString::fromUtf8("ٹھیک"), true }, { 0.4, 0.8, QString::fromUtf8("ہے۔"), false },
                           { 0.9, 1.3, QString::fromUtf8("اب"), false } };
@@ -1427,6 +1463,83 @@ private slots:
                     continue;
                 QVERIFY2(pages.contains(target), qPrintable(page + " links to a missing page: " + target));
             }
+        }
+    }
+
+    void timelineScrollsUpAndDownWhenTracksDontFit()
+    {
+        // Lots of tracks on top push Video 1 (and the clip on it) way down, out of sight
+        for (int i = 0; i < 6; ++i)
+            tl->addTrack(TimelineTrack::Kind::Video, 0);
+        QScrollBar* down = nullptr;
+        for (QScrollBar* bar : tl->findChildren<QScrollBar*>())
+            if (bar->orientation() == Qt::Vertical)
+                down = bar;
+        QVERIFY(down);
+        QVERIFY(down->isVisible()); // there's somewhere to scroll to
+        QCOMPARE(down->value(), 0);
+
+        // Picking the clip (say, from the subtitles list) scrolls it into view
+        tl->selectClip(-1);
+        tl->selectClip(0);
+        QVERIFY(down->value() > 0);
+
+        // The wheel over the track names scrolls up and down (over the clips it's still sideways)
+        const int scrolled = down->value();
+        QWheelEvent up(QPointF(20, 150), tl->mapToGlobal(QPointF(20, 150)), {}, QPoint(0, 240), Qt::NoButton, Qt::NoModifier,
+                       Qt::NoScrollPhase, false);
+        QApplication::sendEvent(tl, &up);
+        QVERIFY(down->value() < scrolled);
+    }
+
+    void propertiesSectionsFoldAway()
+    {
+        ClipInspector inspector;
+        inspector.resize(360, 900);
+        inspector.show();
+        inspector.showClip(0, fakeVideo(10));
+        auto* effects = inspector.findChild<QGroupBox*>("effects");
+        QVERIFY(effects);
+        auto look = [&] { return effects->findChild<QComboBox*>(); };
+        auto strengthLabel = [&] {
+            for (QLabel* l : effects->findChildren<QLabel*>())
+                if (l->text() == "Strength")
+                    return l;
+            return static_cast<QLabel*>(nullptr);
+        };
+        const bool startedFolded = !look()->isVisible();
+        if (startedFolded) // (from an earlier run's settings)
+            QTest::mouseClick(effects, Qt::LeftButton, {}, QPoint(30, 10));
+        QVERIFY(look()->isVisible());
+        QVERIFY(!strengthLabel() || !strengthLabel()->isVisible()); // (that's only for effect blocks)
+
+        QTest::mouseClick(effects, Qt::LeftButton, {}, QPoint(30, 10)); // fold
+        QVERIFY(!look()->isVisible());
+        QVERIFY(effects->title().startsWith("▶"));
+        inspector.showClip(0, fakeVideo(12)); // picking another clip keeps it folded
+        QVERIFY(!look()->isVisible());
+
+        QTest::mouseClick(effects, Qt::LeftButton, {}, QPoint(30, 10)); // and open again
+        QVERIFY(look()->isVisible());
+        QVERIFY(effects->title().startsWith("▼"));
+        QVERIFY(!strengthLabel() || !strengthLabel()->isVisible()); // still not back on its own
+        // Clicking in the middle of a section is for its settings, not folding
+        QTest::mouseClick(effects, Qt::LeftButton, {}, QPoint(30, effects->height() / 2));
+        QVERIFY(look()->isVisible());
+    }
+
+    void exportWindowHidesSubtitleOptionsWhenThereAreNone()
+    {
+        // No subtitles: none of their options show up (they used to get stuck in the corner)
+        for (bool subtitles : { false, true }) {
+            ExportDialog dialog(QSize(1920, 1080), 30, QDir::temp().filePath("x.mp4"), false, "because", subtitles);
+            dialog.show();
+            QApplication::processEvents();
+            int showing = 0;
+            for (QCheckBox* box : dialog.findChildren<QCheckBox*>())
+                if (box->text().contains("track viewers") || box->text().contains("always showing") || box->text().contains(".srt"))
+                    showing += box->isVisible();
+            QCOMPARE(showing, subtitles ? 3 : 0);
         }
     }
 

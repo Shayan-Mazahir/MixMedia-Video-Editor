@@ -50,7 +50,16 @@ signals:
     void freezeFrameClicked();
     void evenOutVolumeClicked(int index);
 
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override; // (clicking a section's title folds it)
+
 private:
+    // Sections fold away when you click their title (remembered for next time)
+    void foldSections();
+    void toggleSection(QGroupBox* section);
+    QList<QGroupBox*> m_sections;
+    QStringList m_folded; // the ones folded away, by name
+    int m_part = -1;
     NumberSlider* addSlider(QFormLayout* form, const QString& label, const QString& what,
                             double min, double max, double sliderMin, double sliderMax,
                             double defaultValue, const QString& suffix = QString(), int decimals = 1);
@@ -98,7 +107,7 @@ private:
     NumberSlider *m_spotX, *m_spotY, *m_zoomAmount, *m_zoomTakes, *m_zoomHold;
     bool m_loading = false; // don't treat filling in the controls as edits
 
-    QLabel* m_empty;
+    QWidget* m_empty; // (what shows when nothing's selected)
     QScrollArea* m_scroll;
     QWidget* m_panel;
     QLabel* m_name;

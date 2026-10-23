@@ -221,6 +221,68 @@ void blur(uint8_t* pixels, int w, int h, int radius, int passes, EffectsScratch&
     }
 }
 
+// A big blur looks just the same done on a shrunk copy and scaled back up (there's no fine
+// detail left to lose), and that's a fraction of the work
+void bigBlur(uint8_t* pixels, int w, int h, int radius, int passes, EffectsScratch& scratch)
+{
+    const int f = radius >= 10 ? 4 : radius >= 4 ? 2 : 1;
+    if (f == 1 || w < f * 8 || h < f * 8) {
+        blur(pixels, w, h, radius, passes, scratch);
+        return;
+    }
+    const int sw = (w + f - 1) / f, sh = (h + f - 1) / f;
+    scratch.small.resize(size_t(sw) * sh * 4);
+    uint8_t* small = scratch.small.data();
+    // Shrink: each small pixel is the average of an f x f block (the ragged edge, if the size
+    // doesn't divide evenly, just repeats the last row and column)
+    const int shift = f == 4 ? 4 : 2; // (dividing by f*f)
+    parallelRows(sh, [&](int y0, int y1) {
+        for (int sy = y0; sy < y1; ++sy) {
+            const uint8_t* rows[4];
+            for (int k = 0; k < f; ++k)
+                rows[k] = pixels + size_t(std::min(h - 1, sy * f + k)) * w * 4;
+            uint8_t* d = small + size_t(sy) * sw * 4;
+            for (int sx = 0; sx < sw; ++sx, d += 4) {
+                int sum[4] = {};
+                for (int k = 0; k < f; ++k)
+                    for (int j = 0; j < f; ++j) {
+                        const uint8_t* p = rows[k] + size_t(std::min(w - 1, sx * f + j)) * 4;
+                        sum[0] += p[0], sum[1] += p[1], sum[2] += p[2], sum[3] += p[3];
+                    }
+                for (int c = 0; c < 4; ++c)
+                    d[c] = uint8_t(sum[c] >> shift);
+            }
+        }
+    });
+    blur(small, sw, sh, std::max(1, radius / f), passes, scratch);
+    // Back up to full size, smoothly (bilinear, in fixed point). Which two small pixels each
+    // column sits between is the same on every row, so that's worked out once.
+    std::vector<int> left(static_cast<size_t>(w)), right(static_cast<size_t>(w)), across(static_cast<size_t>(w));
+    for (int x = 0; x < w; ++x) {
+        const double fx = std::clamp((x + 0.5) / f - 0.5, 0.0, sw - 1.0);
+        left[size_t(x)] = int(fx) * 4;
+        right[size_t(x)] = std::min(int(fx) + 1, sw - 1) * 4;
+        across[size_t(x)] = int((fx - int(fx)) * 256);
+    }
+    parallelRows(h, [&](int y0, int y1) {
+        for (int y = y0; y < y1; ++y) {
+            const double fy = std::clamp((y + 0.5) / f - 0.5, 0.0, sh - 1.0);
+            const int ty = int(fy), by = std::min(ty + 1, sh - 1), wy = int((fy - ty) * 256);
+            const uint8_t* top = small + size_t(ty) * sw * 4;
+            const uint8_t* bottom = small + size_t(by) * sw * 4;
+            uint8_t* d = pixels + size_t(y) * w * 4;
+            for (int x = 0; x < w; ++x, d += 4) {
+                const int l = left[size_t(x)], r = right[size_t(x)], wx = across[size_t(x)];
+                for (int c = 0; c < 4; ++c) {
+                    const int t = top[l + c] * (256 - wx) + top[r + c] * wx;
+                    const int b = bottom[l + c] * (256 - wx) + bottom[r + c] * wx;
+                    d[c] = uint8_t((t * (256 - wy) + b * wy + 32768) >> 16);
+                }
+            }
+        }
+    });
+}
+
 void applyColor(uint8_t* pixels, int w, int h, const ColorMatrix& cm, bool bgra)
 {
     // Fixed-point maths (x4096) is a lot quicker than floats per pixel
@@ -320,7 +382,7 @@ void applyEffects(uint8_t* pixels, int w, int h, const Effects& fx, bool bgra, E
     if (fx.blur > 0) {
         int radius = int(std::lround(fx.blur * 0.012 * std::max(w, h)));
         if (radius >= 1)
-            blur(pixels, w, h, radius, 3, scratch);
+            bigBlur(pixels, w, h, radius, 3, scratch);
     }
     if (fx.sharpen > 0)
         applySharpen(pixels, w, h, fx.sharpen, scratch);

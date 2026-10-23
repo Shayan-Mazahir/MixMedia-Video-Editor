@@ -8,6 +8,7 @@
 #include <QHBoxLayout>
 #include <QSlider>
 
+#include <algorithm>
 #include <cmath>
 
 NumberSlider::NumberSlider(double min, double max, double sliderMin, double sliderMax, int decimals,
@@ -30,7 +31,11 @@ NumberSlider::NumberSlider(double min, double max, double sliderMin, double slid
     m_box->setKeyboardTracking(false); // only apply typed numbers on Enter (no flicker while typing "1.")
     m_box->setButtonSymbols(QAbstractSpinBox::NoButtons);
     m_box->setAlignment(Qt::AlignRight);
-    m_box->setFixedWidth(68);
+    // Wide enough for the longest number it can show, at whatever size text is
+    const QFontMetrics text = m_box->fontMetrics();
+    const int widest = std::max(text.horizontalAdvance(QString::number(min, 'f', decimals) + suffix),
+                                text.horizontalAdvance(QString::number(max, 'f', decimals) + suffix));
+    m_box->setFixedWidth(std::max(68, widest + 20));
     m_box->setToolTip("Type an exact number");
 
     auto* row = new QHBoxLayout(this);
