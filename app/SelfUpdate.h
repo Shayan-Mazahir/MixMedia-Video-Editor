@@ -25,7 +25,8 @@ QString assetName(Kind kind); // which download it needs, e.g. "MixMedia-Linux-x
 
 // Gets the update and puts it in place (with a progress bar). Returns the program to start
 // next time, or empty if it was cancelled or didn't work (after saying why).
-QString install(QWidget* parent, const UpdateChecker::Asset& asset);
+// `ifItFails` gets added to the message if it doesn't work (what to try next).
+QString install(QWidget* parent, const UpdateChecker::Asset& asset, const QString& ifItFails = {});
 
 // Closes MixMedia (asking to save first, as usual) and opens the new one.
 // False = you kept it open (so the new version starts next time instead).

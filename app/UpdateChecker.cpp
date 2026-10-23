@@ -16,7 +16,10 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QHash>
 #include <QLabel>
+#include <QLocale>
+#include <QSet>
 #include <QMessageBox>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -58,19 +61,87 @@ bool fetch(QByteArray* json, QString* error)
     return ok;
 }
 
+// The release notes, pictures and all: pictures on the web get downloaded as they're needed
+// (a plain text browser only shows pictures it already has, and a broken icon otherwise)
+class NotesView : public QTextBrowser {
+public:
+    void show(const QString& markdown)
+    {
+        m_markdown = markdown;
+        setMarkdown(markdown);
+    }
+
+protected:
+    QVariant loadResource(int type, const QUrl& url) override
+    {
+        if (type != QTextDocument::ImageResource || (url.scheme() != "https" && url.scheme() != "http"))
+            return QTextBrowser::loadResource(type, url);
+        if (m_pictures.contains(url))
+            return m_pictures.value(url);
+        if (!m_asked.contains(url)) {
+            m_asked << url;
+            QNetworkRequest request(url);
+            request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+            request.setRawHeader("User-Agent", "MixMedia/" MIXMEDIA_VERSION);
+            request.setTransferTimeout(15000);
+            QNetworkReply* reply = m_network.get(request);
+            connect(reply, &QNetworkReply::finished, this, [this, reply, url] {
+                QImage picture;
+                if (reply->error() == QNetworkReply::NoError && picture.loadFromData(reply->readAll())) {
+                    // Never wider than the notes
+                    const int room = viewport()->width() - 24;
+                    if (room > 50 && picture.width() > room)
+                        picture = picture.scaledToWidth(room, Qt::SmoothTransformation);
+                    m_pictures.insert(url, picture);
+                    setMarkdown(m_markdown); // (lays it out again, with the picture in)
+                }
+                reply->deleteLater();
+            });
+        }
+        // While it's coming (or if it can't): an empty space rather than a broken-picture icon
+        QImage blank(1, 1, QImage::Format_ARGB32);
+        blank.fill(Qt::transparent);
+        return blank;
+    }
+
+private:
+    QString m_markdown;
+    QNetworkAccessManager m_network;
+    QHash<QUrl, QImage> m_pictures;
+    QSet<QUrl> m_asked;
+};
+
+// "25 minutes ago", "about 3 hours ago", "2 days ago"
+QString ago(qint64 seconds)
+{
+    if (seconds < 90)
+        return "just now";
+    if (seconds < 3600)
+        return QString("%1 minutes ago").arg(seconds / 60);
+    if (seconds < 2 * 3600)
+        return "about an hour ago";
+    if (seconds < 48 * 3600)
+        return QString("about %1 hours ago").arg(seconds / 3600);
+    return QString("%1 days ago").arg(seconds / 86400);
+}
+
 void announce(QWidget* parent, const Release& r, bool byHand)
 {
     QDialog dialog(parent);
     dialog.setWindowTitle("Update available");
     dialog.setMinimumSize(520, 420);
-    const bool fresh = r.published.secsTo(QDateTime::currentDateTimeUtc()) < HourInSeconds;
-    auto* heading = new QLabel(QString("<b>MixMedia %1</b> is out%2 (you've got %3).%4")
+    const qint64 age = r.published.secsTo(QDateTime::currentDateTimeUtc());
+    const bool fresh = age < HourInSeconds;
+    const QString when = QLocale().toString(r.published.toLocalTime(), QLocale::ShortFormat);
+    auto* heading = new QLabel(QString("<b>MixMedia %1</b> is out%2 (you've got %3).<br>"
+                                       "<span style='color:%4;'>Released %5 (%6).</span>%7")
                                    .arg(r.tag, r.preRelease ? " as a pre-release" : "", QStringLiteral(MIXMEDIA_VERSION),
+                                        Theme::colours().dim.name(), when, ago(age),
                                         fresh ? "<br><i>It's brand new: the downloads might still be getting ready.</i>" : ""));
     heading->setWordWrap(true);
-    auto* notes = new QTextBrowser;
-    notes->setMarkdown(r.notes.isEmpty() ? QStringLiteral("(No notes for this one.)") : r.notes);
+    auto* notes = new NotesView;
     notes->setOpenExternalLinks(true);
+    notes->show(r.notes.isEmpty() ? QStringLiteral("(No notes for this one.)") : r.notes);
     // This copy can update itself (and the release has the file it needs)? Then offer that,
     // as well as downloading it yourself
     const SelfUpdate::Kind how = SelfUpdate::kind();
@@ -107,7 +178,15 @@ void announce(QWidget* parent, const Release& r, bool byHand)
     if (!updating)
         return;
 
-    const QString program = SelfUpdate::install(parent, *file);
+    // If it doesn't work: fine if it's brand new (the downloads take a while to appear), but
+    // after five hours something's probably gone wrong on my end
+    const QString ifItFails = age < 5 * HourInSeconds
+        ? QString("It only came out %1, so the downloads might still be getting ready. Try again in a bit.").arg(ago(age))
+        : QString("It came out %1. If it's been more than 5 hours and it still doesn't work, I probably messed up "
+                  "somewhere... sooo ugh... I'll get back to it eventually... hopefully... %2\n\n"
+                  "Meanwhile, \"Download it myself\" gets it from the release page.")
+              .arg(ago(age), Theme::emoji("😅", ":/"));
+    const QString program = SelfUpdate::install(parent, *file, ifItFails);
     if (program.isEmpty())
         return;
     QMessageBox done(QMessageBox::Information, "MixMedia's updated",

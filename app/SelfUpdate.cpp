@@ -177,7 +177,7 @@ bool replaceFolder(const QString& tarball, const QString& folder, QString* error
     return ok;
 }
 
-QString install(QWidget* parent, const UpdateChecker::Asset& asset)
+QString install(QWidget* parent, const UpdateChecker::Asset& asset, const QString& ifItFails)
 {
     const Kind how = kind();
     if (how == Kind::None)
@@ -198,7 +198,7 @@ QString install(QWidget* parent, const UpdateChecker::Asset& asset)
     QFile::remove(part);
     if (!ok) {
         if (!error.isEmpty())
-            QMessageBox::warning(parent, "Updating MixMedia", error);
+            QMessageBox::warning(parent, "Updating MixMedia", ifItFails.isEmpty() ? error : error + "\n\n" + ifItFails);
         return {};
     }
     return how == Kind::AppImage ? target : QDir(target).filePath("mixmedia");
