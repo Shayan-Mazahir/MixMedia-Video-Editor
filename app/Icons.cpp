@@ -76,6 +76,13 @@ void draw(QPainter& p, const QString& name, const QColor& c)
         line(7.5, 10.5, 13.5, 10.5);
         if (name == "zoom-in")
             line(10.5, 7.5, 10.5, 13.5);
+    } else if (name == "zoom-here") {
+        // Corners closing in on a spot
+        poly({ { 3, 8 }, { 3, 3 }, { 8, 3 } });
+        poly({ { 16, 3 }, { 21, 3 }, { 21, 8 } });
+        poly({ { 21, 16 }, { 21, 21 }, { 16, 21 } });
+        poly({ { 8, 21 }, { 3, 21 }, { 3, 16 } });
+        p.drawEllipse(QPointF(12, 12), 3.5, 3.5);
     } else if (name == "fit") {
         // Arrows out to the corners
         poly({ { 4, 9 }, { 4, 4 }, { 9, 4 } });

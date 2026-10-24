@@ -16,6 +16,8 @@
 #include "TitleRenderer.h"
 #include "UpdateChecker.h"
 #include "ExportDialog.h"
+#include "Shortcuts.h"
+#include "AppPaths.h"
 #include <QComboBox>
 #include <QLabel>
 #include <QGroupBox>
@@ -43,6 +45,7 @@
 #include <QCheckBox>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QAction>
 #include <QWheelEvent>
 #include <QScrollBar>
 #include <QTableWidget>
@@ -140,6 +143,92 @@ private slots:
         tl->appendClips({ song });
         QCOMPARE(clip(1).track, A1);
         QCOMPARE(clip(1).start, 0.0); // the audio track was empty
+    }
+
+    void customShortcuts()
+    {
+        QStandardPaths::setTestModeEnabled(true); // (keeps this away from your real settings)
+        AppPaths::settings().remove("shortcuts");
+        QWidget host;
+        auto action = [&](const char* text, const char* keys) {
+            auto* a = new QAction(text, &host);
+            a->setShortcut(QKeySequence(keys));
+            Shortcuts::add(a, QString(text).remove('&'));
+            return a;
+        };
+        QAction* split = action("S&plit", "S");
+        QAction* title = action("Add &title", "Ctrl+T");
+
+        Shortcuts::set("split", { QKeySequence("Ctrl+K") });
+        QCOMPARE(split->shortcut(), QKeySequence("Ctrl+K"));
+        QVERIFY(split->toolTip().contains("Ctrl+K")); // (the tooltip says the new keys)
+        QCOMPARE(Shortcuts::whoUses(QKeySequence("Ctrl+T"), "split"), QString("Add title"));
+        QCOMPARE(Shortcuts::whoUses(QKeySequence("Ctrl+J"), "split"), QString());
+
+        // Remembered: next time it's made (next time MixMedia opens), it gets your keys
+        QAction* again = action("S&plit", "S");
+        QCOMPARE(again->shortcut(), QKeySequence("Ctrl+K"));
+
+        // Back to normal = the change is forgotten; none = no shortcut at all
+        Shortcuts::set("split", { QKeySequence("S") });
+        QVERIFY(!AppPaths::settings().contains("shortcuts/split"));
+        Shortcuts::set("add-title", {});
+        QVERIFY(title->shortcuts().isEmpty());
+        QAction* titleAgain = action("Add &title", "Ctrl+T");
+        QVERIFY(titleAgain->shortcuts().isEmpty()); // (remembered as "none", not the usual)
+        Shortcuts::resetAll();
+        QCOMPARE(title->shortcut(), QKeySequence("Ctrl+T"));
+        QCOMPARE(titleAgain->shortcut(), QKeySequence("Ctrl+T"));
+    }
+
+    void markers()
+    {
+        // M drops one at the playhead; M again on the same spot takes it away
+        tl->setPlayhead(3.0);
+        tl->addMarker();
+        QCOMPARE(tl->markers().size(), 1);
+        QCOMPARE(tl->markers()[0].time, 3.0);
+        QCOMPARE(tl->undoName(), QString("add marker"));
+        tl->addMarker();
+        QVERIFY(tl->markers().isEmpty());
+        tl->undo(); // back again, and the clip's untouched by any of it
+        QCOMPARE(tl->markers().size(), 1);
+        QCOMPARE(tl->clips().size(), 1);
+        tl->redo();
+        QVERIFY(tl->markers().isEmpty());
+        tl->undo();
+
+        // ↑ / ↓ stop at it, and clips snap to it
+        tl->setPlayhead(7.0);
+        tl->addMarker();
+        QVERIFY(tl->cutPoints().contains(3.0) && tl->cutPoints().contains(7.0));
+        tl->setPlayhead(0.0);
+        tl->splitAtPlayhead(); // (nothing to split at 0, but makes sure the playhead isn't the thing snapped to)
+        drag(tl, { xAt(5.0), trackY(V1) }, { xAt(5.0) + int(pps * 3.05), trackY(V1) }); // move it 3.05s: start lands near 3
+        QCOMPARE(clip(0).start, 3.0);
+
+        // Saved with the project (notes and all)
+        QList<TimelineMarker> marks = tl->markers();
+        marks[0].note = "Intro ends";
+        ProjectFile::Data out;
+        out.clips = tl->clips();
+        out.tracks = tl->tracks();
+        out.markers = marks;
+        QTemporaryDir dir;
+        QString error;
+        QVERIFY(ProjectFile::save(dir.filePath("m.mixmedia"), out, &error));
+        ProjectFile::Data in;
+        QVERIFY(ProjectFile::load(dir.filePath("m.mixmedia"), &in, nullptr, &error));
+        QCOMPARE(in.markers, marks);
+
+        // Cutting time out moves them along with the video
+        tl->setMarkers({ { 2.0, "a" }, { 5.0, "b" }, { 9.0, "c" } });
+        tl->setClips({ fakeVideo(10) });
+        tl->setMarkers({ { 2.0, "a" }, { 5.0, "b" }, { 9.0, "c" } });
+        tl->removeRanges({ { 4.0, 6.0 } });
+        QCOMPARE(tl->markers()[0].time, 2.0); // before: stays
+        QCOMPARE(tl->markers()[1].time, 4.0); // in the cut bit: goes to where the cut is
+        QCOMPARE(tl->markers()[2].time, 7.0); // after: slides back
     }
 
     void undoSaysWhatItWillUndo()
@@ -794,6 +883,7 @@ private slots:
         c.rotation = -90.0f;
         c.flipH = true;
         c.fill = true;
+        c.blurFill = true;
         ProjectFile::Data out;
         out.clips = { c };
         out.tracks = TimelineWidget::defaultTracks();
@@ -808,7 +898,7 @@ private slots:
         QCOMPARE(back.cropLeft, 0.1f);
         QCOMPARE(back.cropBottom, 0.25f);
         QCOMPARE(back.rotation, -90.0f);
-        QVERIFY(back.flipH && !back.flipV && back.fill);
+        QVERIFY(back.flipH && !back.flipV && back.fill && back.blurFill);
         QCOMPARE(in.settings, out.settings);
 
         // ...and they reach the engine
@@ -816,7 +906,7 @@ private slots:
         const RenderClip r = tl->renderClips().first();
         QCOMPARE(r.cropLeft, 0.1f);
         QCOMPARE(r.rotation, -90.0f);
-        QVERIFY(r.flipH && r.fill);
+        QVERIFY(r.flipH && r.fill && r.blurFill);
     }
 
     void keyframesGlideBetweenValues()
@@ -914,8 +1004,10 @@ private slots:
             if (b->text() == "Add")
                 b->click();
         c = latest();
-        QCOMPARE(c.keys[VE_KEY_SIZE].size(), 4);
-        QCOMPARE(c.keys[VE_KEY_SIZE].first().time, 6.0);
+        // (it goes on top: the keyframes from before the playhead stay)
+        const QList<Keyframe>& sizes = c.keys[VE_KEY_SIZE];
+        QCOMPARE(std::count_if(sizes.begin(), sizes.end(), [](const Keyframe& f) { return f.time > 6.0 - 1e-6; }), 4);
+        QCOMPARE(c.keys[VE_KEY_POS_X].first().time, 6.0);
         QVERIFY(c.keys[VE_KEY_POS_X][1].value > 0); // spot on the left: the picture moves right
         QVERIFY(c.keys[VE_KEY_POS_Y][1].value < 0);
     }
@@ -1490,6 +1582,327 @@ private slots:
                        Qt::NoScrollPhase, false);
         QApplication::sendEvent(tl, &up);
         QVERIFY(down->value() < scrolled);
+    }
+
+    void greenScreenCopesWithUnevenLighting()
+    {
+        // A green screen that's bright in the middle and much darker at the sides, with a grey
+        // "person" in the middle
+        QImage shot(160, 90, QImage::Format_RGB32);
+        for (int y = 0; y < 90; ++y)
+            for (int x = 0; x < 160; ++x) {
+                const double light = 1.0 - 0.6 * std::abs(x - 80) / 80.0;
+                shot.setPixel(x, y, qRgb(int(30 * light), int(180 * light), int(70 * light)));
+            }
+        for (int y = 30; y < 70; ++y)
+            for (int x = 60; x < 100; ++x)
+                shot.setPixel(x, y, qRgb(150, 140, 135));
+
+        // "Find it" spots the screen (and doesn't for an ordinary picture)
+        const QColor found = ClipInspector::guessScreenColour(shot);
+        QVERIFY(found.isValid());
+        QVERIFY(found.green() > found.red() + 60 && found.green() > found.blue() + 40);
+        QImage busy(160, 90, QImage::Format_RGB32); // (an ordinary shot: all sorts of colours round the edge)
+        for (int y = 0; y < 90; ++y)
+            for (int x = 0; x < 160; ++x)
+                busy.setPixel(x, y, qRgb((x * 37) % 256, (y * 53 + x * 11) % 256, (x * y) % 256));
+        QVERIFY(!ClipInspector::guessScreenColour(busy).isValid());
+
+        // Keyed: the bright green and the dark green both go, the person stays
+        QTemporaryDir dir;
+        QVERIFY(shot.save(dir.filePath("shot.png")));
+        const QByteArray path = dir.filePath("shot.png").toUtf8();
+        ve_clip c {};
+        c.kind = VE_CLIP_MEDIA;
+        c.path = path.constData();
+        c.duration = 5;
+        c.use_video = 1;
+        c.chroma_key = 1;
+        c.key_color = (uint(found.red()) << 16) | (uint(found.green()) << 8) | uint(found.blue());
+        c.key_strength = 0.4f;
+        c.key_softness = 0.2f;
+        c.key_spill = 0.5f;
+        c.key_edges = 0.3f;
+        ve_timeline* t = ve_timeline_create();
+        ve_timeline_set_clips(t, &c, 1);
+        std::vector<uint8_t> px(160 * 90 * 4);
+        QCOMPARE(ve_timeline_render_video(t, 1.0, 160, 90, px.data()), VE_OK);
+        ve_timeline_destroy(t);
+        auto at = [&](int x, int y) { return px.data() + (size_t(y) * 160 + x) * 4; };
+        QVERIFY(at(80, 10)[1] < 30);  // bright green in the middle: gone (black behind)
+        QVERIFY(at(3, 45)[1] < 30);   // dark green at the side: gone too
+        QVERIFY(at(80, 50)[0] > 120); // the person: still there
+    }
+
+    void facecamFrames()
+    {
+        // "Circle, bottom right": circle, cropped square, border, shadow, small, in the corner
+        ClipInspector inspector;
+        inspector.showClip(0, fakeVideo(10)); // (1920x1080)
+        QComboBox* looks = nullptr;
+        for (QComboBox* box : inspector.findChildren<QComboBox*>())
+            if (box->findText("Circle, bottom right") >= 0)
+                looks = box;
+        QVERIFY(looks);
+        QSignalSpy edited(&inspector, &ClipInspector::edited);
+        looks->setCurrentIndex(looks->findText("Circle, bottom right"));
+        emit looks->activated(looks->currentIndex());
+        QVERIFY(!edited.isEmpty());
+        const TimelineClip c = edited.last().at(1).value<TimelineClip>();
+        QCOMPARE(c.shape, int(VE_SHAPE_CIRCLE));
+        QVERIFY(std::abs(c.cropLeft - (1 - 1080.0 / 1920) / 2) < 0.01 && std::abs(c.cropRight - c.cropLeft) < 1e-6);
+        QVERIFY(c.borderWidth > 0 && c.shadow > 0);
+        QVERIFY(std::abs(c.scale - 0.3f) < 0.01f);
+        QVERIFY(c.posX > 0.3f && c.posY > 0.25f); // (down in the bottom right, the same gap from both edges)
+        QCOMPARE(edited.last().at(2).toString(), QString("facecam")); // one undo step
+
+        // Saved and opened again
+        ProjectFile::Data out;
+        out.clips = { c };
+        out.tracks = TimelineWidget::defaultTracks();
+        QTemporaryDir dir;
+        QString error;
+        QVERIFY(ProjectFile::save(dir.filePath("f.mixmedia"), out, &error));
+        ProjectFile::Data in;
+        QVERIFY(ProjectFile::load(dir.filePath("f.mixmedia"), &in, nullptr, &error));
+        const TimelineClip& back = in.clips.first();
+        QCOMPARE(back.shape, c.shape);
+        QCOMPARE(back.borderWidth, c.borderWidth);
+        QCOMPARE(back.shadow, c.shadow);
+        QCOMPARE(back.borderColor, c.borderColor);
+
+        // The engine really does cut a circle: corners see-through, the middle there
+        QImage red(200, 100, QImage::Format_RGB32);
+        red.fill(qRgb(220, 30, 30));
+        QVERIFY(red.save(dir.filePath("red.png")));
+        const QByteArray path = dir.filePath("red.png").toUtf8();
+        ve_clip v {};
+        v.kind = VE_CLIP_MEDIA;
+        v.path = path.constData();
+        v.duration = 5;
+        v.use_video = 1;
+        v.shape = VE_SHAPE_CIRCLE;
+        ve_timeline* t = ve_timeline_create();
+        ve_timeline_set_clips(t, &v, 1);
+        std::vector<uint8_t> px(200 * 100 * 4);
+        QCOMPARE(ve_timeline_render_video(t, 1.0, 200, 100, px.data()), VE_OK);
+        ve_timeline_destroy(t);
+        auto at = [&](int x, int y) { return px.data() + (size_t(y) * 200 + x) * 4; };
+        QVERIFY(at(100, 50)[0] > 200);                    // the middle: red
+        QVERIFY(at(52, 5)[0] < 20 && at(148, 95)[0] < 20); // just outside the circle: black behind
+        QVERIFY(at(10, 50)[0] < 20);                       // the sides (past the circle): black too
+    }
+
+    void zoomStyles()
+    {
+        // How keyframes can arrive
+        QVERIFY(std::abs(ve_ease(VE_EASE_SMOOTH, 0.5) - 0.5) < 1e-9);
+        QVERIFY(std::abs(ve_ease(VE_EASE_STRAIGHT, 0.25) - 0.25) < 1e-9);
+        QCOMPARE(ve_ease(VE_EASE_JUMP, 0.99), 0.0);
+        double most = 0;
+        for (int i = 0; i <= 100; ++i)
+            most = std::max(most, ve_ease(VE_EASE_BOUNCE, i / 100.0));
+        QVERIFY(most > 1.03 && most < 1.2); // goes a bit past...
+        QVERIFY(std::abs(ve_ease(VE_EASE_BOUNCE, 1.0) - 1.0) < 1e-9); // ...and lands right on it
+
+        // Quick zoom's Punch with a shake: snaps in at the playhead, rumbles, then snaps back out
+        ClipInspector inspector;
+        inspector.showClip(0, fakeVideo(10));
+        inspector.setPlayhead(2.0);
+        for (QCheckBox* box : inspector.findChildren<QCheckBox*>())
+            if (box->text() == "Shake when it lands")
+                box->setChecked(true);
+        QSignalSpy edited(&inspector, &ClipInspector::edited);
+        QPushButton* punch = nullptr;
+        for (QPushButton* b : inspector.findChildren<QPushButton*>())
+            if (b->text() == "Punch")
+                punch = b;
+        QVERIFY(punch && punch->isVisibleTo(&inspector)); // (out in the open, not in a folded section)
+        punch->click();
+        QVERIFY(!edited.isEmpty());
+        TimelineClip c = edited.last().at(1).value<TimelineClip>();
+        QVERIFY(std::abs(c.valueAt(VE_KEY_SIZE, 2.02) - 1.0f) < 1e-4); // (not yet)
+        QVERIFY(std::abs(c.valueAt(VE_KEY_SIZE, 2.05) - 2.0f) < 1e-4); // straight in, no glide
+        QVERIFY(std::abs(c.valueAt(VE_KEY_SIZE, 4.0) - 2.0f) < 1e-4);  // stays
+        QVERIFY(std::abs(c.valueAt(VE_KEY_SIZE, 4.2) - 1.0f) < 1e-4);  // and out again
+        QVERIFY(c.valueAt(VE_KEY_SHAKE, 2.05) > 0.7f && c.valueAt(VE_KEY_SHAKE, 1.9) == 0.0f && c.valueAt(VE_KEY_SHAKE, 3.0) == 0.0f);
+
+        // A second Z later on keeps the first zoom (and does a punch again)
+        inspector.showClip(0, c);
+        inspector.setPlayhead(6.0);
+        inspector.zoomHere();
+        c = edited.last().at(1).value<TimelineClip>();
+        QVERIFY(std::abs(c.valueAt(VE_KEY_SIZE, 3.0) - 2.0f) < 1e-4);
+        QVERIFY(std::abs(c.valueAt(VE_KEY_SIZE, 7.0) - 2.0f) < 1e-4);
+        QVERIFY(std::abs(c.valueAt(VE_KEY_SIZE, 5.0) - 1.0f) < 1e-4);
+
+        // Picking how a keyframe arrives
+        inspector.showClip(0, c);
+        inspector.setPlayhead(c.keys[VE_KEY_SIZE][1].time);
+        QComboBox* ease = nullptr;
+        for (QComboBox* box : inspector.findChildren<QComboBox*>())
+            if (box->findText("Jump") >= 0)
+                ease = box;
+        QVERIFY(ease && ease->isEnabled());
+        QCOMPARE(ease->currentText(), QString("Jump"));
+        ease->setCurrentIndex(ease->findText("Bounce"));
+        emit ease->activated(ease->currentIndex());
+        c = edited.last().at(1).value<TimelineClip>();
+        QCOMPARE(c.keys[VE_KEY_SIZE][1].ease, int(VE_EASE_BOUNCE));
+
+        // Saved and opened again
+        ProjectFile::Data out;
+        out.clips = { c };
+        out.tracks = TimelineWidget::defaultTracks();
+        QTemporaryDir dir;
+        QString error;
+        QVERIFY(ProjectFile::save(dir.filePath("z.mixmedia"), out, &error));
+        ProjectFile::Data in;
+        QVERIFY(ProjectFile::load(dir.filePath("z.mixmedia"), &in, nullptr, &error));
+        QCOMPARE(in.clips.first().keys, c.keys);
+
+        // The engine shakes it: different from moment to moment, but the same every time
+        QImage stripes(320, 180, QImage::Format_RGB32);
+        for (int y = 0; y < 180; ++y)
+            for (int x = 0; x < 320; ++x)
+                stripes.setPixel(x, y, ((x / 8 + y / 8) % 2) ? qRgb(240, 240, 240) : qRgb(20, 20, 20));
+        QVERIFY(stripes.save(dir.filePath("stripes.png")));
+        const QByteArray path = dir.filePath("stripes.png").toUtf8();
+        ve_clip v {};
+        v.kind = VE_CLIP_MEDIA;
+        v.path = path.constData();
+        v.duration = 5;
+        v.use_video = 1;
+        v.shake = 1;
+        ve_timeline* t = ve_timeline_create();
+        ve_timeline_set_clips(t, &v, 1);
+        auto frame = [&](double at) {
+            std::vector<uint8_t> px(320 * 180 * 4);
+            ve_timeline_render_video(t, at, 320, 180, px.data());
+            return px;
+        };
+        const auto a = frame(1.0), b = frame(1.3), again = frame(1.0);
+        ve_timeline_destroy(t);
+        QVERIFY(a != b);
+        QVERIFY(a == again);
+        for (int corner : { 0, 319 * 4, (179 * 320) * 4, (179 * 320 + 319) * 4 })
+            QVERIFY(a[size_t(corner)] > 10 || a[size_t(corner) + 1] > 10 || a[size_t(corner) + 2] > 10); // (no black edges showing)
+    }
+
+    void everyScreenColourWorks()
+    {
+        // Blue, red, purple, yellow (a bit uneven), and white and black (evenly lit, as they need):
+        // "Find it" spots each one, and keying takes the screen away but keeps the grey "person"
+        struct Screen { const char* name; QRgb colour; bool uneven; };
+        const Screen screens[] = { { "blue", qRgb(25, 60, 200), true }, { "red", qRgb(200, 30, 30), true },
+                                   { "purple", qRgb(150, 40, 170), true }, { "yellow", qRgb(225, 205, 40), true },
+                                   { "white", qRgb(235, 235, 235), false }, { "black", qRgb(14, 14, 14), false } };
+        QTemporaryDir dir;
+        for (const Screen& s : screens) {
+            QImage shot(160, 90, QImage::Format_RGB32);
+            for (int y = 0; y < 90; ++y)
+                for (int x = 0; x < 160; ++x) {
+                    const double light = s.uneven ? 1.0 - 0.3 * std::abs(x - 80) / 80.0 : 1.0;
+                    shot.setPixel(x, y, qRgb(int(qRed(s.colour) * light), int(qGreen(s.colour) * light), int(qBlue(s.colour) * light)));
+                }
+            for (int y = 30; y < 70; ++y)
+                for (int x = 60; x < 100; ++x)
+                    shot.setPixel(x, y, qRgb(130, 125, 120));
+            const QColor found = ClipInspector::guessScreenColour(shot);
+            QVERIFY2(found.isValid(), s.name);
+            const QString file = dir.filePath(QString(s.name) + ".png");
+            QVERIFY(shot.save(file));
+            const QByteArray path = file.toUtf8();
+            ve_clip c {};
+            c.kind = VE_CLIP_MEDIA;
+            c.path = path.constData();
+            c.duration = 5;
+            c.use_video = 1;
+            c.chroma_key = 1;
+            c.key_color = (uint(found.red()) << 16) | (uint(found.green()) << 8) | uint(found.blue());
+            c.key_strength = 0.4f;
+            c.key_softness = 0.2f;
+            c.key_spill = 0.5f;
+            c.key_edges = 0.3f;
+            // (on top of a cyan picture, a colour none of the screens are, so "gone" shows cyan)
+            ve_clip behind = c;
+            behind.chroma_key = 0;
+            const QByteArray whitePath = dir.filePath("white-behind.png").toUtf8();
+            QImage white(160, 90, QImage::Format_RGB32);
+            white.fill(qRgb(40, 200, 220));
+            QVERIFY(white.save(QString::fromUtf8(whitePath)));
+            behind.path = whitePath.constData();
+            c.layer = 1;
+            ve_clip both[2] = { behind, c };
+            ve_timeline* t = ve_timeline_create();
+            ve_timeline_set_clips(t, both, 2);
+            std::vector<uint8_t> px(160 * 90 * 4);
+            QCOMPARE(ve_timeline_render_video(t, 1.0, 160, 90, px.data()), VE_OK);
+            ve_timeline_destroy(t);
+            auto at = [&](int x, int y) { return px.data() + (size_t(y) * 160 + x) * 4; };
+            for (auto [x, y] : { std::pair { 80, 8 }, std::pair { 4, 45 } }) // the screen, middle and side: gone
+                QVERIFY2(std::abs(at(x, y)[0] - 40) < 25 && std::abs(at(x, y)[1] - 200) < 25 && std::abs(at(x, y)[2] - 220) < 25, s.name);
+            const uint8_t* person = at(80, 50); // the person: still there, still grey
+            QVERIFY2(std::abs(person[0] - 130) < 25 && std::abs(person[2] - 120) < 25, s.name);
+        }
+    }
+
+    void looksFromCubeFiles()
+    {
+        // A tiny look that turns every colour into its opposite
+        QTemporaryDir dir;
+        auto write = [&](const QString& name, const QByteArray& text) {
+            QFile f(dir.filePath(name));
+            return f.open(QIODevice::WriteOnly) && f.write(text) == text.size();
+        };
+        QByteArray invert = "# made for the test\nTITLE \"Opposite\"\nLUT_3D_SIZE 2\n";
+        for (int b = 0; b < 2; ++b)
+            for (int g = 0; g < 2; ++g)
+                for (int r = 0; r < 2; ++r)
+                    invert += QByteArray::number(1 - r) + " " + QByteArray::number(1 - g) + " " + QByteArray::number(1 - b) + "\n";
+        QVERIFY(write("opposite.cube", invert));
+        QVERIFY(write("broken.cube", "LUT_3D_SIZE 2\n0 0 0\n1 1\n"));
+        QVERIFY(write("flat.cube", "LUT_1D_SIZE 2\n0 0 0\n1 1 1\n"));
+
+        auto run = [&](const QString& file, float amount) {
+            const QByteArray path = dir.filePath(file).toUtf8();
+            ve_clip c {};
+            c.lut_path = path.constData();
+            c.lut_amount = amount;
+            uint8_t px[8] = { 200, 100, 0, 255, 255, 255, 255, 255 }; // (RGBA, two pixels)
+            ve_apply_effects(&c, px, 2, 1);
+            return std::vector<int>(px, px + 8);
+        };
+        QCOMPARE(run("opposite.cube", 1.0f), (std::vector<int> { 55, 155, 255, 255, 0, 0, 0, 255 }));
+        const auto half = run("opposite.cube", 0.5f); // half way: everything ends up mid-grey
+        QVERIFY(std::abs(half[0] - 128) <= 1 && std::abs(half[2] - 128) <= 1);
+        // Files that aren't proper 3D looks just get left out (no crash, no change)
+        QCOMPARE(run("broken.cube", 1.0f), (std::vector<int> { 200, 100, 0, 255, 255, 255, 255, 255 }));
+        QCOMPARE(run("flat.cube", 1.0f), (std::vector<int> { 200, 100, 0, 255, 255, 255, 255, 255 }));
+
+        // In the looks folder, it shows up in the Look list, and picking it sets the clip's look
+        QStandardPaths::setTestModeEnabled(true); // (keeps this away from your real looks)
+        const QString mine = QDir(AppPaths::looks()).filePath("opposite.cube");
+        QFile::remove(mine);
+        QVERIFY(QFile::copy(dir.filePath("opposite.cube"), mine));
+        ClipInspector inspector;
+        TimelineClip clip = fakeVideo(10);
+        inspector.showClip(0, clip);
+        QComboBox* look = nullptr;
+        for (QComboBox* box : inspector.findChildren<QComboBox*>())
+            if (box->findText("Black & white") >= 0)
+                look = box;
+        QVERIFY(look);
+        const int at = look->findData("lut:" + QFileInfo(mine).absoluteFilePath());
+        QVERIFY(at >= 0);
+        QCOMPARE(look->itemText(at), QString("opposite"));
+        QSignalSpy edited(&inspector, &ClipInspector::edited);
+        look->setCurrentIndex(at);
+        QVERIFY(!edited.isEmpty());
+        const TimelineClip changed = edited.last().at(1).value<TimelineClip>();
+        QCOMPARE(changed.lutPath, QFileInfo(mine).absoluteFilePath());
+        QCOMPARE(changed.look, 0);
+        QFile::remove(mine);
     }
 
     void propertiesSectionsFoldAway()

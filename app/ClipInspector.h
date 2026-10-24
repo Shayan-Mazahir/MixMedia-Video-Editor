@@ -5,6 +5,8 @@
 
 #include "TimelineClip.h"
 
+#include <QColor>
+#include <QImage>
 #include <QWidget>
 
 class NumberSlider;
@@ -31,10 +33,16 @@ public:
     // index -1 = nothing selected. part = (for transition blocks) VE_PART_*, or -1 when it's on a cut.
     void showClip(int index, const TimelineClip& clip, int part = -1);
 
+    // The green (or blue) screen's colour in a frame, from round its edges (where the screen
+    // usually is). Invalid if there isn't an obvious one.
+    static QColor guessScreenColour(const QImage& frame);
+
     // Keyframes get added and changed wherever the playhead is
     void setPlayhead(double sec);
     // The spot to zoom into, picked by clicking the preview (-0.5..0.5 from the middle)
     void setSpot(QPointF spot);
+    // Zooms into the spot at the playhead, the way the Zoom & pan section's set up (the Z key)
+    void zoomHere();
     // The green screen colour, picked by clicking the preview
     void setKeyColor(const QColor& color);
 
@@ -100,11 +108,18 @@ private:
     QPushButton* m_prevKey;
     QPushButton* m_nextKey;
     QPushButton* m_clearKeys;
+    QComboBox* m_keyEase; // how it gets to the keyframe at the playhead
 
     QGroupBox* m_zoomBox;
     QComboBox* m_zoomPreset;
     QWidget* m_spotControls;
     NumberSlider *m_spotX, *m_spotY, *m_zoomAmount, *m_zoomTakes, *m_zoomHold;
+    // Quick zoom, up top: the buttons add one straight away, and Z does whichever was used last
+    QGroupBox* m_quickBox;
+    QString m_zoomStyle; // "punch", "bounce" or "smooth"
+    QList<QPushButton*> m_styleButtons;
+    QCheckBox* m_zoomShake;
+    QLabel* m_spotLabel;
     bool m_loading = false; // don't treat filling in the controls as edits
 
     QWidget* m_empty; // (what shows when nothing's selected)
@@ -159,13 +174,29 @@ private:
 
     QGroupBox* m_effectsBox;
     QComboBox* m_look;
+    NumberSlider* m_lutStrength; // (only for looks from .cube files)
+    void fillLooks(const QString& selectLut = {}, int selectLook = 0); // the built-in looks, then yours
     NumberSlider* m_strength; // for effect blocks: how strongly they apply
     NumberSlider *m_brightness, *m_contrast, *m_saturation, *m_temperature, *m_blur, *m_sharpen, *m_vignette;
 
     QGroupBox* m_placeBox;
-    NumberSlider *m_scale, *m_posX, *m_posY, *m_opacity;
+    NumberSlider *m_scale, *m_posX, *m_posY, *m_opacity, *m_shake;
 
     QGroupBox* m_cropBox;
+    NumberSlider* m_keyEdges = nullptr;
+    QComboBox* m_keyPreset = nullptr;
+    // Frame: shape, border, shadow (for a facecam)
+    QGroupBox* m_frameBox = nullptr;
+    QComboBox* m_shape = nullptr;
+    NumberSlider* m_corners = nullptr;
+    NumberSlider* m_border = nullptr;
+    QPushButton* m_borderColor = nullptr;
+    NumberSlider* m_frameShadow = nullptr;
+    void refreshBorderColorButton();
+    void applyFacecam(int preset); // one of the ready-made facecam looks
+    class QCheckBox* m_keyMatte = nullptr;
+    void findScreenColour(); // "Find it": looks at the frame under the playhead
+    class QCheckBox* m_blurFill;
     QCheckBox* m_fill;
     NumberSlider* m_rotation;
     QPushButton* m_flipH;

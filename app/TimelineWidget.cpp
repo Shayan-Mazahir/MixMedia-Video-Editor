@@ -16,6 +16,10 @@
 #include <QRegularExpression>
 #include <QContextMenuEvent>
 #include <QMenu>
+#include <QLineEdit>
+#include <QHelpEvent>
+#include <QToolTip>
+#include <QInputDialog>
 #include <QScrollBar>
 #include <QVariantAnimation>
 
@@ -274,9 +278,16 @@ QList<RenderClip> TimelineWidget::renderClips(const TitleImage& titleImage, bool
         r.flipH = c.flipH;
         r.flipV = c.flipV;
         r.fill = c.fill;
+        r.blurFill = c.blurFill;
+        r.shape = c.shape;
+        r.cornerRadius = c.cornerRadius;
+        r.borderWidth = c.borderWidth;
+        r.borderColor = c.borderColor.rgb() & 0xffffff;
+        r.shadow = c.shadow;
+        r.shake = c.shake;
         for (int p = 0; p < VE_KEY_COUNT; ++p)
             for (const Keyframe& f : c.keys[size_t(p)])
-                r.keys << ve_keyframe { p, f.time, f.value };
+                r.keys << ve_keyframe { p, f.time, f.value, f.ease };
         r.reverse = c.reverse;
         r.freeze = c.freeze;
         r.keepPitch = c.keepPitch;
@@ -288,9 +299,13 @@ QList<RenderClip> TimelineWidget::renderClips(const TitleImage& titleImage, bool
         r.keyStrength = c.keyStrength;
         r.keySoftness = c.keySoftness;
         r.keySpill = c.keySpill;
+        r.keyEdges = c.keyEdges;
+        r.keyMatte = c.keyMatte;
         if (c.freeze)
             r.audio = false; // a frozen frame makes no sound
         r.look = c.look;
+        r.lutPath = c.lutPath;
+        r.lutStrength = c.lutStrength;
         r.brightness = c.brightness;
         r.contrast = c.contrast;
         r.saturation = c.saturation;
@@ -872,6 +887,8 @@ QList<double> TimelineWidget::cutPoints() const
     QList<double> points { 0.0 };
     for (const TimelineClip& c : m_clips)
         points << c.start << c.end();
+    for (const TimelineMarker& m : m_markers) // (↑ and ↓ stop at markers too)
+        points << m.time;
     std::sort(points.begin(), points.end());
     points.erase(std::unique(points.begin(), points.end(), [](double a, double b) { return std::abs(a - b) < 1e-6; }),
                  points.end());
@@ -1266,6 +1283,8 @@ double TimelineWidget::snapped(double sec, int ignore, double* moved) const
     };
     consider(0.0);
     consider(m_playhead);
+    for (const TimelineMarker& m : m_markers)
+        consider(m.time);
     for (int i = 0; i < m_clips.size(); ++i) {
         if (i == ignore || m_dragPartners.contains(i))
             continue;
@@ -1469,6 +1488,9 @@ void TimelineWidget::removeRanges(QList<QPair<double, double>> ranges)
     // Latest first, so cutting one doesn't move the ones still to go
     for (auto r = ranges.crbegin(); r != ranges.crend(); ++r) {
         const double a = r->first, b = r->second, gap = b - a;
+        // Markers move with the video they're on (one in a cut-out bit goes to where the cut is)
+        for (TimelineMarker& m : m_markers)
+            m.time = m.time >= b ? m.time - gap : m.time > a ? a : m.time;
         // Footage gets cut at both ends of the stretch, so the bit in the middle can go
         for (double at : { b, a }) {
             QList<int> across;
@@ -1513,6 +1535,22 @@ void TimelineWidget::setReverse(int index, bool backwards)
     for (int i : partnersOf(index))
         m_clips[i].reverse = backwards;
     changed();
+}
+
+int TimelineWidget::videoAtPlayhead() const
+{
+    auto under = [this](int i) {
+        const TimelineClip& c = m_clips[i];
+        return c.kind == TimelineClip::Kind::Media && c.showsVideo() && m_tracks[c.track].kind == TimelineTrack::Kind::Video
+               && m_playhead >= c.start - 1e-6 && m_playhead < c.end() - 1e-6;
+    };
+    if (m_selected >= 0 && m_selected < m_clips.size() && under(m_selected))
+        return m_selected;
+    int best = -1;
+    for (int i = 0; i < m_clips.size(); ++i)
+        if (under(i) && (best < 0 || m_clips[i].scale > m_clips[best].scale))
+            best = i; // (a facecam's small, the gameplay under it isn't)
+    return best;
 }
 
 void TimelineWidget::freezeFrame(double seconds)
@@ -1653,9 +1691,11 @@ void TimelineWidget::undo()
     if (m_undo.isEmpty())
         return;
     Snapshot s = m_undo.takeLast();
-    m_redo << Snapshot { m_clips, m_tracks, s.what };
+    m_redo << Snapshot { m_clips, m_tracks, s.what, m_markers, s.hasMarkers };
     m_clips = s.clips;
     m_tracks = s.tracks;
+    if (s.hasMarkers)
+        m_markers = s.markers;
     select(-1);
     changed();
 }
@@ -1665,9 +1705,11 @@ void TimelineWidget::redo()
     if (m_redo.isEmpty())
         return;
     Snapshot s = m_redo.takeLast();
-    m_undo << Snapshot { m_clips, m_tracks, s.what };
+    m_undo << Snapshot { m_clips, m_tracks, s.what, m_markers, s.hasMarkers };
     m_clips = s.clips;
     m_tracks = s.tracks;
+    if (s.hasMarkers)
+        m_markers = s.markers;
     select(-1);
     changed();
 }
@@ -2099,6 +2141,36 @@ void TimelineWidget::resizeEvent(QResizeEvent* event)
 void TimelineWidget::contextMenuEvent(QContextMenuEvent* event)
 {
     QPoint pos = event->pos();
+    if (pos.y() < RulerHeight && pos.x() >= HeaderWidth) {
+        // Right-click the ruler: markers
+        QMenu menu(this);
+        if (const int m = markerAt(pos); m >= 0) {
+            menu.addAction("Write a note…", this, [this, m] { editMarker(m); });
+            menu.addAction("Remove this marker", this, [this, m] {
+                pushMarkerUndo("remove marker");
+                m_markers.removeAt(m);
+                changed();
+            });
+        } else {
+            const double at = std::max(0.0, xToSec(pos.x()));
+            menu.addAction("Add a marker here", this, [this, at] {
+                pushMarkerUndo("add marker");
+                m_markers << TimelineMarker { at, {} };
+                std::sort(m_markers.begin(), m_markers.end(), [](const auto& x, const auto& y) { return x.time < y.time; });
+                changed();
+            });
+        }
+        if (!m_markers.isEmpty()) {
+            menu.addSeparator();
+            menu.addAction("Remove all markers", this, [this] {
+                pushMarkerUndo("remove markers");
+                m_markers.clear();
+                changed();
+            });
+        }
+        menu.exec(event->globalPos());
+        return;
+    }
     if (pos.x() < HeaderWidth) {
         // Right-click a track name: add or remove tracks
         int track = trackAt(pos.y());
@@ -2196,6 +2268,7 @@ void TimelineWidget::paintEvent(QPaintEvent*)
             drawClip(c, ghost, false, true);
         c.restore();
         drawRuler(c);
+        drawMarkers(c);
         m_cacheDirty = false;
     }
 
@@ -2357,6 +2430,133 @@ void TimelineWidget::showAddTrackMenu(const QPoint& globalPos)
         changed();
     });
     menu.exec(globalPos);
+}
+
+// ---- Markers ----
+
+void TimelineWidget::setMarkers(QList<TimelineMarker> markers)
+{
+    std::sort(markers.begin(), markers.end(), [](const auto& a, const auto& b) { return a.time < b.time; });
+    m_markers = markers;
+    invalidate();
+}
+
+void TimelineWidget::pushMarkerUndo(const QString& what)
+{
+    m_undo << Snapshot { m_clips, m_tracks, what, m_markers, true };
+    if (m_undo.size() > MaxUndo)
+        m_undo.removeFirst();
+    m_redo.clear();
+}
+
+void TimelineWidget::addMarker()
+{
+    // Already one right here (within a couple of pixels)? Then M takes it away again
+    for (int i = 0; i < m_markers.size(); ++i)
+        if (std::abs(m_markers[i].time - m_playhead) * m_pixelsPerSecond < 3) {
+            pushMarkerUndo("remove marker");
+            m_markers.removeAt(i);
+            changed();
+            return;
+        }
+    pushMarkerUndo("add marker");
+    m_markers << TimelineMarker { m_playhead, {} };
+    std::sort(m_markers.begin(), m_markers.end(), [](const auto& a, const auto& b) { return a.time < b.time; });
+    changed();
+}
+
+int TimelineWidget::markerAt(QPoint pos) const
+{
+    if (pos.y() >= RulerHeight || pos.x() < HeaderWidth)
+        return -1;
+    int best = -1;
+    double bestDist = 7;
+    for (int i = 0; i < m_markers.size(); ++i)
+        if (const double d = std::abs(secToX(m_markers[i].time) - pos.x()); d < bestDist) {
+            bestDist = d;
+            best = i;
+        }
+    return best;
+}
+
+void TimelineWidget::editMarker(int index)
+{
+    if (index < 0 || index >= m_markers.size())
+        return;
+    bool ok = false;
+    const QString note = QInputDialog::getText(this, "Marker", "A note for this spot (shows on the ruler):",
+                                               QLineEdit::Normal, m_markers[index].note, &ok);
+    if (!ok || note == m_markers[index].note)
+        return;
+    pushMarkerUndo("marker note");
+    m_markers[index].note = note.trimmed();
+    changed();
+}
+
+void TimelineWidget::drawMarkers(QPainter& p)
+{
+    if (m_markers.isEmpty())
+        return;
+    const QColor colour(0xf0, 0xa0, 0x30);
+    p.save();
+    p.setClipRect(QRect(HeaderWidth, 0, width() - HeaderWidth, height()));
+    p.setFont(Theme::font(0.8, true));
+    for (int i = 0; i < m_markers.size(); ++i) {
+        const double x = secToX(m_markers[i].time);
+        if (x < HeaderWidth - 6 || x > width() + 6)
+            continue;
+        // A faint line down through the tracks...
+        QColor faint = colour;
+        faint.setAlpha(90);
+        p.setPen(QPen(faint, 1, Qt::DashLine));
+        p.drawLine(QPointF(x, RulerHeight), QPointF(x, height()));
+        // ...and a little flag on the ruler, with the note beside it (as much as fits before the next)
+        const QPointF flag[] = { { x - 5, RulerHeight - 11.0 }, { x + 5, RulerHeight - 11.0 }, { x, RulerHeight - 3.0 } };
+        p.setPen(Qt::NoPen);
+        p.setBrush(colour);
+        p.drawPolygon(flag, 3);
+        if (!m_markers[i].note.isEmpty()) {
+            const double next = i + 1 < m_markers.size() ? secToX(m_markers[i + 1].time) : width();
+            const int room = int(next - x - 12);
+            if (room > 24) {
+                // (on a little dark pill, so it reads over the ruler's times)
+                const QString text = p.fontMetrics().elidedText(m_markers[i].note, Qt::ElideRight, room - 8);
+                const QRectF pill(x + 6, 2, p.fontMetrics().horizontalAdvance(text) + 10, RulerHeight - 14);
+                p.setPen(Qt::NoPen);
+                p.setBrush(QColor(20, 22, 26, 230));
+                p.drawRoundedRect(pill, 4, 4);
+                p.setPen(colour.lighter(115));
+                p.drawText(pill, Qt::AlignCenter, text);
+            }
+        }
+    }
+    p.restore();
+}
+
+void TimelineWidget::mouseDoubleClickEvent(QMouseEvent* event)
+{
+    const int m = markerAt(event->position().toPoint());
+    if (m >= 0) {
+        editMarker(m);
+        return;
+    }
+    QWidget::mouseDoubleClickEvent(event);
+}
+
+bool TimelineWidget::event(QEvent* event)
+{
+    if (event->type() == QEvent::ToolTip) {
+        auto* help = static_cast<QHelpEvent*>(event);
+        if (const int m = markerAt(help->pos()); m >= 0) {
+            const TimelineMarker& marker = m_markers[m];
+            QToolTip::showText(help->globalPos(),
+                               (marker.note.isEmpty() ? QStringLiteral("Marker") : marker.note) + " · " + formatTime(marker.time)
+                                   + "\nDouble-click to write a note, right-click for more");
+            return true;
+        }
+        QToolTip::hideText();
+    }
+    return QWidget::event(event);
 }
 
 void TimelineWidget::leaveEvent(QEvent* event)

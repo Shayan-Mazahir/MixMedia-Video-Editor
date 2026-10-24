@@ -8,6 +8,7 @@
 #include "AppSettings.h"
 #include "AutoCaptions.h"
 #include "QuietCut.h"
+#include "Shortcuts.h"
 #include "CardDelegate.h"
 #include "ExportDialog.h"
 #include "HelpWindow.h"
@@ -416,6 +417,7 @@ void MainWindow::buildActions()
         QString keysText = keys.isEmpty() ? QString() : QString(" (%1)").arg(keys.first().toString(QKeySequence::NativeText));
         a->setToolTip(tip + keysText);
         connect(a, &QAction::triggered, this, slot);
+        Shortcuts::add(a, tip); // (you can change its keys in Settings -> Shortcuts)
         return a;
     };
 
@@ -424,7 +426,7 @@ void MainWindow::buildActions()
     QAction* save = make("&Save project", { QKeySequence::Save }, "Save the project", &MainWindow::saveProject);
     QAction* saveAs = make("Save project &as…", { QKeySequence("Ctrl+Shift+S") }, "Save the project somewhere new", &MainWindow::saveProjectAs);
     QAction* import = make("&Import media…", { QKeySequence("Ctrl+I") }, "Import media", &MainWindow::importMedia);
-    QAction* exportAction = make("&Export…", { QKeySequence("Ctrl+E") }, "Export to MP4", &MainWindow::exportVideo);
+    QAction* exportAction = make("&Export…", { QKeySequence("Ctrl+E") }, "Make the finished video (MP4, GIF, or just the sound)", &MainWindow::exportVideo);
     QAction* quit = make("&Quit", { QKeySequence::Quit }, "Quit", &QWidget::close);
     QAction* importSubs = make("Import s&ubtitles (.srt, .vtt)…", {}, "Bring in a subtitle file", &MainWindow::importSubtitles);
     QAction* exportSubs = make("Export subtitles (.s&rt)…", {}, "Save the subtitles as an .srt file", &MainWindow::exportSubtitles);
@@ -441,7 +443,7 @@ void MainWindow::buildActions()
     QAction* copy = make("&Copy", { QKeySequence::Copy }, "Copy the selected clips", [this] { m_timeline->copySelected(); });
     QAction* cut = make("Cu&t", { QKeySequence::Cut }, "Cut the selected clips", [this] { m_timeline->cutSelected(); });
     QAction* paste = make("&Paste", { QKeySequence::Paste }, "Paste at the playhead", [this] { m_timeline->paste(); });
-    QAction* settingsWindow = make("Se&ttings…", { QKeySequence::Preferences }, "How much of the computer MixMedia may use",
+    QAction* settingsWindow = make("Se&ttings…", { QKeySequence::Preferences }, "Light or dark, how much of the computer it uses, updates, and where everything's kept",
                                    [this] { SettingsDialog(this).exec(); });
     QAction* selectAll = make("Select &all", { QKeySequence::SelectAll }, "Select every clip", [this] { m_timeline->selectAll(); });
     QAction* captions = make("Auto-&captions…", {}, "Listen to the video and write the subtitles", &MainWindow::autoCaptions);
@@ -453,10 +455,22 @@ void MainWindow::buildActions()
     QAction* delGap = make("Delete, &leaving a gap", {}, "Delete the selected clip but leave the space empty (Shift+Delete)", [this] { m_timeline->deleteSelectedKeepGap(); });
     QAction* detach = make("Detach &audio", { QKeySequence("Ctrl+D") }, "Put the selected clip's sound on its own track", [this] { m_timeline->detachAudio(); });
     QAction* title = make("Add &title", { QKeySequence("Ctrl+T") }, "Add a title at the playhead", [this] { m_timeline->addTitle(); });
+    QAction* marker = make("Add a &marker", { QKeySequence("M") }, "Mark this spot (press again to take it away). Double-click it on the ruler for a note.",
+                           [this] { m_timeline->addMarker(); });
+    QAction* zoomHere = make("Zoom in &here", { QKeySequence("Z") }, "Zoom into the video at the playhead, set up how Zoom & pan says",
+                             [this] {
+                                 const int i = m_timeline->videoAtPlayhead();
+                                 if (i < 0) {
+                                     statusBar()->showMessage("Put the playhead over a video first", 4000);
+                                     return;
+                                 }
+                                 m_timeline->selectClip(i); // (so the properties show the clip it zoomed)
+                                 m_inspector->zoomHere();
+                             });
 
     QAction* zoomOut = make("Zoom −", { QKeySequence("Ctrl+-") }, "Zoom out", [this] { m_timeline->zoomBy(0.8); });
     QAction* zoomIn = make("Zoom +", { QKeySequence("Ctrl+=") }, "Zoom in", [this] { m_timeline->zoomBy(1.25); });
-    QAction* fit = make("Fit", { QKeySequence("Ctrl+0") }, "Fit the whole timeline", [this] { m_timeline->zoomToFit(); });
+    QAction* fit = make("Zoom to fit", { QKeySequence("Ctrl+0") }, "Fit the whole timeline on screen", [this] { m_timeline->zoomToFit(); });
 
     QMenu* file = menuBar()->addMenu("&File");
     file->addActions({ newProject, open });
@@ -492,7 +506,7 @@ void MainWindow::buildActions()
     edit->addSeparator();
     edit->addActions({ cut, copy, paste, selectAll });
     edit->addSeparator();
-    edit->addActions({ split, del, delGap, detach, freeze, title, captions, quiet });
+    edit->addActions({ split, del, delGap, detach, freeze, title, marker, zoomHere, captions, quiet });
     edit->addSeparator();
     edit->addAction(settingsWindow);
     QMenu* view = menuBar()->addMenu("&View");
@@ -524,7 +538,8 @@ void MainWindow::buildActions()
         }
     });
     m_fullScreen->setCheckable(true);
-    m_fullScreen->setShortcut(Qt::Key_F11); // (the standard one is Ctrl+Shift+F on KDE, which is freeze frame)
+    m_fullScreen->setShortcut(Qt::Key_F11);
+    Shortcuts::add(m_fullScreen, "Fill the whole screen"); // (the standard one is Ctrl+Shift+F on KDE, which is freeze frame)
     view->addSeparator();
     view->addAction("&Reset the layout", this, &MainWindow::resetLayout);
     // Getting around. These work from anywhere in the window.
@@ -536,8 +551,8 @@ void MainWindow::buildActions()
     playback->addAction(make("Back one second", { QKeySequence("Shift+Left") }, "Jump back a second", [this] { seekBy(-1.0); }));
     playback->addAction(make("Forward one second", { QKeySequence("Shift+Right") }, "Jump forward a second", [this] { seekBy(1.0); }));
     playback->addSeparator();
-    playback->addAction(make("Previous cut", { QKeySequence(Qt::Key_Up) }, "Jump to the previous cut", [this] { jumpToCut(-1); }));
-    playback->addAction(make("Next cut", { QKeySequence(Qt::Key_Down) }, "Jump to the next cut", [this] { jumpToCut(1); }));
+    playback->addAction(make("Previous cut or marker", { QKeySequence(Qt::Key_Up) }, "Jump to the previous cut or marker", [this] { jumpToCut(-1); }));
+    playback->addAction(make("Next cut or marker", { QKeySequence(Qt::Key_Down) }, "Jump to the next cut or marker", [this] { jumpToCut(1); }));
     playback->addAction(make("Go to start", { QKeySequence(Qt::Key_Home) }, "Go to the start", &MainWindow::goToStart));
     playback->addAction(make("Go to end", { QKeySequence(Qt::Key_End) }, "Go to the end", [this] { seekTo(m_timeline->duration()); }));
 
@@ -558,7 +573,7 @@ void MainWindow::buildActions()
     bar->addSeparator();
     bar->addActions({ undo, redo });
     bar->addSeparator();
-    bar->addActions({ split, del, detach, title });
+    bar->addActions({ split, del, detach, title, zoomHere });
     bar->addSeparator();
     bar->addActions({ zoomOut, zoomIn, fit });
     // Icons beside the words
@@ -568,7 +583,7 @@ void MainWindow::buildActions()
     bar->setIconSize(QSize(iconSize, iconSize));
     const QList<QPair<QAction*, const char*>> icons = {
         { import, "import" }, { undo, "undo" }, { redo, "redo" }, { split, "split" }, { del, "delete" },
-        { detach, "detach" }, { title, "title" }, { zoomOut, "zoom-out" }, { zoomIn, "zoom-in" }, { fit, "fit" },
+        { detach, "detach" }, { title, "title" }, { zoomHere, "zoom-here" }, { zoomOut, "zoom-out" }, { zoomIn, "zoom-in" }, { fit, "fit" },
         { captions, "captions" },
     };
     for (const auto& [action, icon] : icons)
@@ -584,6 +599,7 @@ void MainWindow::buildActions()
     del->setIconText("Delete");
     detach->setIconText("Detach audio");
     title->setIconText("Title");
+    zoomHere->setIconText("Zoom here");
     import->setIconText("Import");
     exportAction->setIconText("Export");
 
@@ -698,7 +714,7 @@ QWidget* MainWindow::buildPreviewPanel()
     // The finished video's shape, right where you can see what it does
     m_shapeBox = new QComboBox;
     m_shapeBox->setFocusPolicy(Qt::NoFocus);
-    m_shapeBox->setToolTip("The shape of the finished video. File → Project settings for its size and frame rate.");
+    m_shapeBox->setToolTip("The shape of the finished video. File -> Project settings for its size and frame rate.");
     for (const ProjectSettings::Shape& s : ProjectSettings::shapes()) {
         m_shapeBox->addItem(s.shortName, s.id);
         m_shapeBox->setItemData(m_shapeBox->count() - 1, s.name, Qt::ToolTipRole);
@@ -1137,6 +1153,7 @@ void MainWindow::newProject()
     m_mediaBin->clear();
     setProjectSettings({});
     m_timeline->setClips({}, TimelineWidget::defaultTracks());
+    m_timeline->setMarkers({});
     m_timeline->setPlayhead(0);
     m_loadingProject = false;
     m_projectPath.clear();
@@ -1177,6 +1194,7 @@ bool MainWindow::loadProject(const QString& path)
 
     setProjectSettings(data.settings);
     m_timeline->setClips(data.clips, data.tracks);
+    m_timeline->setMarkers(data.markers);
     m_timeline->setPlayhead(data.playhead);
     onPlayheadMoved(data.playhead);
     m_loadingProject = false;
@@ -1199,6 +1217,7 @@ ProjectFile::Data MainWindow::projectData() const
     data.clips = m_timeline->clips();
     data.tracks = m_timeline->tracks();
     data.playhead = m_timeline->playhead();
+    data.markers = m_timeline->markers();
     data.settings = m_settings;
     return data;
 }
@@ -1409,6 +1428,8 @@ void MainWindow::exportVideo()
     };
     auto job = std::make_shared<Job>();
     QList<RenderClip> clips = renderClips(dialog.size(), dialog.burnSubtitles()); // titles drawn sharp at the export size
+    for (RenderClip& c : clips)
+        c.keyMatte = false; // ("show what's see-through" is just for tuning, never in the video)
     // Subtitles as their own track and/or file
     QList<SubtitleFile::Line> subtitleText;
     for (int i : subtitleLines) {

@@ -8,6 +8,7 @@
 #include "ffmpeg_util.h"
 #include "audio_reader.h"
 #include "timeline.h"
+#include "lut.h"
 #include "video_reader.h"
 
 #include <algorithm>
@@ -57,17 +58,23 @@ const char* ve_version(void)
     return VE_VERSION;
 }
 
+double ve_ease(int ease, double progress)
+{
+    return ve::ease(ease, progress);
+}
+
 const char* ve_error_string(int code)
 {
     switch (code) {
     case VE_OK: return "ok";
-    case VE_ERR_ARG: return "bad argument";
-    case VE_ERR_OPEN: return "couldn't open file";
-    case VE_ERR_NO_STREAM: return "no video or audio found";
-    case VE_ERR_DECODE: return "couldn't decode frame";
-    case VE_ERR_ENCODE: return "export failed";
+    // (people see these, in "my video.mp4 — ..." and "The export stopped: ...")
+    case VE_ERR_ARG: return "something wasn't set up right (that's a bug on my end, sorry)";
+    case VE_ERR_OPEN: return "couldn't open the file (is it still there?)";
+    case VE_ERR_NO_STREAM: return "there's no picture or sound in it";
+    case VE_ERR_DECODE: return "part of it couldn't be read (the file might be damaged)";
+    case VE_ERR_ENCODE: return "the video couldn't be written";
     case VE_ERR_CANCELLED: return "cancelled";
-    default: return "unknown error";
+    default: return "something unexpected went wrong";
     }
 }
 
@@ -245,6 +252,15 @@ void ve_timeline_set_clips(ve_timeline* tl, const ve_clip* clips, int count)
         clip.flipH = c.flip_h != 0;
         clip.flipV = c.flip_v != 0;
         clip.fill = c.fill_frame != 0;
+        clip.blurFill = c.blur_fill != 0;
+        clip.shape = std::clamp(c.shape, 0, 2);
+        clip.cornerRadius = c.corner_radius > 0 ? std::min(0.5f, c.corner_radius) : 0.15f;
+        clip.borderWidth = std::clamp(c.border_width, 0.0f, 0.25f);
+        clip.borderR = uint8_t(c.border_color >> 16);
+        clip.borderG = uint8_t(c.border_color >> 8);
+        clip.borderB = uint8_t(c.border_color);
+        clip.shadow = std::clamp(c.shadow, 0.0f, 1.0f);
+        clip.shake = std::isfinite(c.shake) ? std::clamp(c.shake, 0.0f, 1.0f) : 0.0f;
         clip.keepPitch = c.keep_pitch != 0;
         clip.denoise = std::clamp(c.denoise, 0.0f, 1.0f);
         clip.duck = c.duck != 0;
@@ -258,14 +274,20 @@ void ve_timeline_set_clips(ve_timeline* tl, const ve_clip* clips, int count)
         clip.key.strength = std::clamp(c.key_strength, 0.0f, 1.0f);
         clip.key.softness = std::clamp(c.key_softness, 0.0f, 1.0f);
         clip.key.spill = std::clamp(c.key_spill, 0.0f, 1.0f);
+        clip.key.edges = std::clamp(c.key_edges, 0.0f, 1.0f);
+        clip.key.matte = c.key_matte != 0;
         for (int k = 0; k < c.keyframe_count && c.keyframes; ++k) {
             const ve_keyframe& key = c.keyframes[k];
             if (key.param >= 0 && key.param < VE_KEY_COUNT && std::isfinite(key.time) && std::isfinite(key.value))
-                clip.keys[size_t(key.param)].push_back({ key.time, key.value });
+                clip.keys[size_t(key.param)].push_back({ key.time, key.value, std::clamp(key.ease, 0, VE_EASE_COUNT - 1) });
         }
         for (auto& list : clip.keys)
             std::stable_sort(list.begin(), list.end(), [](const ve::Keyframe& a, const ve::Keyframe& b) { return a.time < b.time; });
         clip.effects.look = (c.look > 0 && c.look < VE_LOOK_COUNT) ? ve::Look(c.look) : ve::Look::None;
+        if (c.lut_path && *c.lut_path) {
+            clip.effects.lut = ve::loadLut(c.lut_path);
+            clip.effects.lutAmount = c.lut_amount > 0 ? std::min(1.0f, c.lut_amount) : 1.0f;
+        }
         clip.effects.brightness = c.brightness;
         clip.effects.contrast = c.contrast;
         clip.effects.saturation = c.saturation;
@@ -348,6 +370,10 @@ int ve_apply_effects(const ve_clip* c, uint8_t* rgba, int w, int h)
         return VE_ERR_ARG;
     ve::Effects fx;
     fx.look = (c->look > 0 && c->look < VE_LOOK_COUNT) ? ve::Look(c->look) : ve::Look::None;
+    if (c->lut_path && *c->lut_path) {
+        fx.lut = ve::loadLut(c->lut_path);
+        fx.lutAmount = c->lut_amount > 0 ? std::min(1.0f, c->lut_amount) : 1.0f;
+    }
     fx.brightness = c->brightness;
     fx.contrast = c->contrast;
     fx.saturation = c->saturation;

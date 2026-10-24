@@ -144,6 +144,7 @@ QString models() { return subfolder("models"); }
 QString fonts() { return subfolder("fonts"); }
 QString autosave() { return subfolder("autosave"); }
 QString cache() { return subfolder("cache"); }
+QString looks() { return subfolder("looks"); }
 
 QSettings settings()
 {
@@ -154,12 +155,12 @@ void setUp()
 {
     bringOver();
     tidyOldCache();
-    for (const QString& folder : { models(), fonts(), autosave(), cache() })
+    for (const QString& folder : { models(), fonts(), looks(), autosave(), cache() })
         QDir().mkpath(folder);
 
-    // A note for anyone poking around in there
+    // A note for anyone poking around in there (written fresh each time, so it lists new folders too)
     const QString note = QDir(data()).filePath("What's in here.txt");
-    if (!QFileInfo::exists(note)) {
+    {
         QFile f(note);
         if (f.open(QIODevice::WriteOnly | QIODevice::Text))
             f.write("Everything MixMedia keeps is in this folder:\n"
@@ -169,6 +170,8 @@ void setUp()
                     "                 (ggml-....bin) in here and they show up in the list.\n"
                     "  fonts          extra fonts for titles and subtitles. Drop .ttf or .otf files in\n"
                     "                 here and they show up next time MixMedia starts.\n"
+                    "  looks          colour looks (.cube files, also called LUTs) for the Look list in\n"
+                    "                 Properties. Lots of free ones online.\n"
                     "  autosave       backups, in case it crashes\n"
                     "  cache          pictures MixMedia can make again (fine to delete)\n"
                     "\n"

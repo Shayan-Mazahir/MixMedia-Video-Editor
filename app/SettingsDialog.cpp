@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shayan Mazahir. Part of MixMedia Video Editor, see NOTICE.
 
 #include "AppPaths.h"
+#include "Shortcuts.h"
 #include "SettingsDialog.h"
 #include "AppSettings.h"
 #include "HelpWindow.h"
@@ -22,6 +23,10 @@
 #include <QRadioButton>
 #include <QSettings>
 #include <QTabWidget>
+#include <QSignalBlocker>
+#include <QKeySequenceEdit>
+#include <QHeaderView>
+#include <QTableWidget>
 #include <QVBoxLayout>
 
 SettingsDialog::SettingsDialog(QWidget* parent)
@@ -126,6 +131,7 @@ SettingsDialog::SettingsDialog(QWidget* parent)
     path->setTextInteractionFlags(Qt::TextSelectableByMouse);
     path->setFont(Theme::font(1.0, true));
     auto* inside = new QLabel("<b>models</b>: speech models for auto-captions (drop your own in here)<br>"
+                              "<b>looks</b>: your own colour looks (.cube files) for the Look list<br>"
                               "<b>fonts</b>: extra fonts for titles and subtitles (.ttf, .otf), "
                               "ready next time MixMedia starts<br>"
                               "<b>settings.ini</b>: these settings<br>"
@@ -150,6 +156,7 @@ SettingsDialog::SettingsDialog(QWidget* parent)
     tabs->addTab(appearance, "Appearance");
     tabs->addTab(performance, "Performance");
     tabs->addTab(updates, "Updates");
+    tabs->addTab(buildShortcuts(), "Shortcuts");
     tabs->addTab(files, "Files");
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel | QDialogButtonBox::Help);
@@ -187,7 +194,131 @@ void SettingsDialog::save()
     s.setValue("performance/gpuCaptions", m_gpuCaptions->isChecked());
     AppSettings::apply();
     Theme::saveMode(m_themeLight->isChecked() ? Theme::Mode::Light : m_themeSystem->isChecked() ? Theme::Mode::System : Theme::Mode::Dark);
+    if (m_resetAllKeys)
+        Shortcuts::resetAll();
+    for (auto it = m_pendingKeys.cbegin(); it != m_pendingKeys.cend(); ++it)
+        Shortcuts::set(it.key(), it.value());
     UpdateChecker::setChannel(m_updatesOff->isChecked()   ? UpdateChecker::Channel::Off
                               : m_updatesPre->isChecked() ? UpdateChecker::Channel::PreReleases
                                                           : UpdateChecker::Channel::Releases);
+}
+
+// ---- Shortcuts ----
+
+QWidget* SettingsDialog::buildShortcuts()
+{
+    auto* page = new QWidget;
+    auto* layout = new QVBoxLayout(page);
+    auto* intro = new QLabel("Pick something, then press the keys you'd like for it.");
+    intro->setWordWrap(true);
+    layout->addWidget(intro);
+
+    m_keys = new QTableWidget(0, 2);
+    m_keys->setHorizontalHeaderLabels({ "What it does", "Keys" });
+    m_keys->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    m_keys->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    m_keys->verticalHeader()->setVisible(false);
+    m_keys->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_keys->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_keys->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    layout->addWidget(m_keys, 1);
+
+    // Underneath: the keys for whatever's picked
+    auto* row = new QHBoxLayout;
+    row->addWidget(new QLabel("Keys"));
+    m_keyEdit = new QKeySequenceEdit;
+    m_keyEdit->setMaximumSequenceLength(1);
+    m_keyEdit->setToolTip("Click here, then press the keys (like Ctrl+K)");
+    row->addWidget(m_keyEdit, 1);
+    auto* none = new QPushButton("None");
+    none->setToolTip("No shortcut for this one");
+    auto* normal = new QPushButton("Back to normal");
+    row->addWidget(none);
+    row->addWidget(normal);
+    layout->addLayout(row);
+    m_keyNote = new QLabel;
+    m_keyNote->setWordWrap(true);
+    m_keyNote->setProperty("role", "hint");
+    layout->addWidget(m_keyNote);
+    auto* all = new QPushButton("Put them all back to normal");
+    layout->addWidget(all, 0, Qt::AlignLeft);
+
+    const QList<Shortcuts::Entry> entries = Shortcuts::all();
+    auto pickedRow = [this] { return m_keys->currentRow(); };
+    auto change = [this, entries](int r, const QList<QKeySequence>& keys) {
+        if (r < 0 || r >= entries.size())
+            return;
+        QString note;
+        // Already someone else's? Then they lose it (and you're told)
+        if (!keys.isEmpty())
+            for (int other = 0; other < entries.size(); ++other)
+                if (other != r && keysFor(other).contains(keys.first())) {
+                    m_pendingKeys[entries[other].id] = {};
+                    note = QString("%1 was on %2, so that's got no shortcut now.")
+                               .arg(keys.first().toString(QKeySequence::NativeText), entries[other].name);
+                }
+        m_pendingKeys[entries[r].id] = keys;
+        showKeys();
+        m_keyNote->setText(note);
+    };
+    connect(m_keys, &QTableWidget::currentCellChanged, this, [this, entries](int r) {
+        QSignalBlocker hush(m_keyEdit);
+        m_keyEdit->setKeySequence(r >= 0 ? keysFor(r).value(0) : QKeySequence());
+        m_keyNote->setText(r >= 0 ? QString("Normally: %1").arg(entries[r].defaults.isEmpty()
+                                                                     ? QStringLiteral("none")
+                                                                     : entries[r].defaults.first().toString(QKeySequence::NativeText))
+                                  : QString());
+    });
+    connect(m_keyEdit, &QKeySequenceEdit::editingFinished, this, [=, this] {
+        const QKeySequence k = m_keyEdit->keySequence();
+        change(pickedRow(), k.isEmpty() ? QList<QKeySequence> {} : QList<QKeySequence> { k });
+    });
+    connect(none, &QPushButton::clicked, this, [=] { change(pickedRow(), {}); });
+    connect(normal, &QPushButton::clicked, this, [=] {
+        if (pickedRow() >= 0)
+            change(pickedRow(), entries[pickedRow()].defaults);
+    });
+    connect(all, &QPushButton::clicked, this, [this] {
+        m_pendingKeys.clear();
+        m_resetAllKeys = true;
+        showKeys();
+        m_keyNote->setText("Everything's back to its usual keys (once you press OK).");
+    });
+    showKeys();
+    return page;
+}
+
+QList<QKeySequence> SettingsDialog::keysFor(int row) const
+{
+    const QList<Shortcuts::Entry> entries = Shortcuts::all();
+    if (row < 0 || row >= entries.size())
+        return {};
+    const Shortcuts::Entry& e = entries[row];
+    if (m_pendingKeys.contains(e.id))
+        return m_pendingKeys.value(e.id);
+    return m_resetAllKeys ? e.defaults : e.action->shortcuts();
+}
+
+void SettingsDialog::showKeys()
+{
+    const QList<Shortcuts::Entry> entries = Shortcuts::all();
+    const int keep = m_keys->currentRow();
+    QSignalBlocker hush(m_keys);
+    m_keys->setRowCount(int(entries.size()));
+    for (int r = 0; r < entries.size(); ++r) {
+        QStringList shown;
+        for (const QKeySequence& k : keysFor(r))
+            if (!k.isEmpty())
+                shown << k.toString(QKeySequence::NativeText);
+        auto* what = new QTableWidgetItem(entries[r].name);
+        auto* keys = new QTableWidgetItem(shown.isEmpty() ? QStringLiteral("—") : shown.join("  or  "));
+        // Changed from normal: in bold, so you can see what you've changed
+        QFont f = keys->font();
+        f.setBold(keysFor(r) != entries[r].defaults);
+        keys->setFont(f);
+        m_keys->setItem(r, 0, what);
+        m_keys->setItem(r, 1, keys);
+    }
+    if (keep >= 0)
+        m_keys->setCurrentCell(keep, 0);
 }

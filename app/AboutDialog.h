@@ -5,7 +5,7 @@
 
 #include <QDialog>
 
-// Help → About MixMedia: who made it, where to get help, the licence, and what it's built with.
+// Help -> About MixMedia: who made it, where to get help, the licence, and what it's built with.
 // (Keep the credit if you share a modified version, see NOTICE.)
 class AboutDialog : public QDialog {
     Q_OBJECT

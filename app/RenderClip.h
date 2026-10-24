@@ -9,6 +9,8 @@
 #include <QList>
 #include <QString>
 
+#include <algorithm>
+
 #include <vector>
 
 // A clip described just enough for the engine to play it. Safe to copy between threads.
@@ -27,6 +29,8 @@ struct RenderClip {
     double speed = 1.0;
     float opacity = 1.0f, scale = 1.0f, posX = 0.0f, posY = 0.0f;
     int look = 0;
+    QString lutPath;
+    float lutStrength = 1.0f;
     float brightness = 0, contrast = 0, saturation = 0, temperature = 0, blur = 0, sharpen = 0, vignette = 0;
     int transition = 0;
     double transitionDuration = 1.0;
@@ -35,22 +39,28 @@ struct RenderClip {
     int part = VE_PART_THROUGH; // transition blocks: on the spot, in from black or out to black
     float cropLeft = 0, cropRight = 0, cropTop = 0, cropBottom = 0;
     float rotation = 0;
-    bool flipH = false, flipV = false, fill = false;
+    bool flipH = false, flipV = false, fill = false, blurFill = false;
+    int shape = 0;
+    float cornerRadius = 0.15f, borderWidth = 0.0f, shadow = 0.0f;
+    unsigned int borderColor = 0xffffff;
+    float shake = 0.0f;
     QList<ve_keyframe> keys;
     bool reverse = false, freeze = false;
     bool keepPitch = true, duck = false;
     float denoise = 0.0f, duckAmount = 0.7f;
     bool chromaKey = false;
     unsigned keyColor = 0x00c83c;
-    float keyStrength = 0.4f, keySoftness = 0.2f, keySpill = 0.5f;
+    float keyStrength = 0.4f, keySoftness = 0.2f, keySpill = 0.5f, keyEdges = 0.3f;
+    bool keyMatte = false;
 };
 
 // Hands the clips to an engine timeline (the engine wants plain C strings, so we keep them alive here).
 inline void applyClips(ve_timeline* tl, const QList<RenderClip>& clips)
 {
-    std::vector<QByteArray> paths;
+    std::vector<QByteArray> paths, lutPaths;
     std::vector<ve_clip> list;
     paths.reserve(clips.size());
+    lutPaths.reserve(clips.size()); // (reserved, so the strings don't move while the engine reads them)
     for (const RenderClip& c : clips) {
         paths.push_back(c.path.toUtf8());
         ve_clip v {};
@@ -71,6 +81,9 @@ inline void applyClips(ve_timeline* tl, const QList<RenderClip>& clips)
         v.pos_x = c.posX;
         v.pos_y = c.posY;
         v.look = c.look;
+        lutPaths.push_back(c.lutPath.toUtf8());
+        v.lut_path = c.lutPath.isEmpty() ? nullptr : lutPaths.back().constData();
+        v.lut_amount = std::max(0.001f, c.lutStrength);
         v.brightness = c.brightness;
         v.contrast = c.contrast;
         v.saturation = c.saturation;
@@ -93,6 +106,13 @@ inline void applyClips(ve_timeline* tl, const QList<RenderClip>& clips)
         v.flip_h = c.flipH;
         v.flip_v = c.flipV;
         v.fill_frame = c.fill;
+        v.blur_fill = c.blurFill;
+        v.shape = c.shape;
+        v.corner_radius = c.cornerRadius;
+        v.border_width = c.borderWidth;
+        v.border_color = c.borderColor;
+        v.shadow = c.shadow;
+        v.shake = c.shake;
         v.keep_pitch = c.keepPitch;
         v.denoise = c.denoise;
         v.duck = c.duck;
@@ -104,6 +124,8 @@ inline void applyClips(ve_timeline* tl, const QList<RenderClip>& clips)
         v.key_strength = c.keyStrength;
         v.key_softness = c.keySoftness;
         v.key_spill = c.keySpill;
+        v.key_edges = c.keyEdges;
+        v.key_matte = c.keyMatte;
         v.keyframes = c.keys.constData();
         v.keyframe_count = int(c.keys.size());
         list.push_back(v);

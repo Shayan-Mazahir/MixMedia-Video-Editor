@@ -78,13 +78,27 @@ int ve_reader_frame(ve_reader* reader, double sec, int fast, int max_w, int max_
 
 /* ---- Timelines ---- */
 
-/* A setting's value at one moment of a clip. In between keyframes it glides smoothly. */
+/* A setting's value at one moment of a clip. In between keyframes it glides there (see ease). */
 typedef struct ve_keyframe {
     int param;    /* one of VE_KEY_* */
     double time;  /* seconds from the start of the clip */
     float value;  /* size: 1 = normal; position: fraction of the frame; opacity: 0..1;
-                     rotation: degrees clockwise; volume: 1 = as is */
+                     rotation: degrees clockwise; volume: 1 = as is; shake: 0..1 */
+    int ease;     /* VE_EASE_*: how it gets here from the keyframe before (0 = smoothly) */
 } ve_keyframe;
+
+/* How a setting gets to a keyframe from the one before */
+enum {
+    VE_EASE_SMOOTH = 0, /* speeds up, then slows down to land */
+    VE_EASE_STRAIGHT,   /* the same speed all the way */
+    VE_EASE_BOUNCE,     /* goes a bit past it and springs back */
+    VE_EASE_JUMP,       /* stays put, then jumps there right at the keyframe */
+    VE_EASE_COUNT
+};
+
+/* Where a setting is `progress` (0..1) of the way between two keyframes, eased (0..1, a bounce
+   goes a bit over 1) */
+double ve_ease(int ease, double progress);
 
 enum {
     VE_KEY_SIZE = 0,
@@ -93,8 +107,12 @@ enum {
     VE_KEY_OPACITY,
     VE_KEY_ROTATION,
     VE_KEY_VOLUME,
+    VE_KEY_SHAKE,
     VE_KEY_COUNT
 };
+
+/* A clip's frame shape (ve_clip.shape) */
+enum { VE_SHAPE_RECTANGLE = 0, VE_SHAPE_ROUNDED, VE_SHAPE_CIRCLE };
 
 typedef struct ve_clip {
     int kind;        /* VE_CLIP_MEDIA (a file), VE_CLIP_ADJUSTMENT (effects over everything below, no file)
@@ -118,6 +136,8 @@ typedef struct ve_clip {
     float pos_y;
 
     int look;           /* one of VE_LOOK_* */
+    const char* lut_path; /* a look from a .cube file, on top of (or instead of) `look`; NULL = none */
+    float lut_amount;   /* 0..1, how much of it (0 counts as 1) */
     float brightness;   /* -1..1 */
     float contrast;     /* -1..1 */
     float saturation;   /* -1..1, -1 = grey */
@@ -146,6 +166,14 @@ typedef struct ve_clip {
     float rotation;      /* degrees, clockwise */
     int flip_h, flip_v;  /* 1 = mirrored left-right / upside down */
     int fill_frame;      /* 1 = cover the whole frame (cutting off what hangs over), 0 = fit inside it */
+    int blur_fill;       /* 1 = where it doesn't cover the frame, show a blurred, zoomed copy of it instead of black */
+    /* Its frame (e.g. for a facecam): shape, border and shadow */
+    int shape;           /* VE_SHAPE_*: rectangle (0), rounded corners or circle */
+    float corner_radius; /* rounded corners: a fraction of the shorter side (0 counts as 0.15) */
+    float border_width;  /* a fraction of the shorter side, 0 = no border */
+    unsigned int border_color; /* 0xRRGGBB */
+    float shadow;        /* 0..1, a soft shadow behind it */
+    float shake;         /* 0..1, camera shake: wobbles it about (can be keyframed) */
 
     int reverse;         /* 1 = plays backwards */
     int freeze;          /* 1 = holds the frame at `in` the whole time */
@@ -156,6 +184,8 @@ typedef struct ve_clip {
     float key_strength;           /* 0..1, how far from that colour still counts */
     float key_softness;           /* 0..1, how gradual the edge is */
     float key_spill;              /* 0..1, how much of its glow to take off the subject */
+    float key_edges;              /* 0..1, how much to pull in and soften the edge (0 = none) */
+    int key_matte;                /* 1 = show what's see-through as black and what's kept as white (for tuning) */
 
     /* Sound */
     int keep_pitch;      /* 1 = speed changes don't change the pitch */

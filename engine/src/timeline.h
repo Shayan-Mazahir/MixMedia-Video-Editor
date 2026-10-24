@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <map>
 #include <memory>
 #include <string>
@@ -24,12 +25,25 @@ enum class Transition { None, Dissolve, FadeBlack, WipeLeft, WipeRight, WipeUp, 
 enum class Anim { None, Fade, SlideLeft, SlideRight, SlideUp, SlideDown, Zoom, Wipe, Rise, Count };
 
 // The settings that can change over time with keyframes (same order as VE_KEY_*)
-enum class Param { Scale, PosX, PosY, Opacity, Rotation, Volume, Count };
+enum class Param { Scale, PosX, PosY, Opacity, Rotation, Volume, Shake, Count };
 
 struct Keyframe {
     double time;  // seconds from the start of the clip
     float value;
+    int ease = 0; // VE_EASE_*: how it arrives here from the keyframe before
 };
+
+// How far along (0..1, a bounce overshoots a bit) a setting is, `p` of the way between keyframes
+inline double ease(int kind, double p)
+{
+    p = std::clamp(p, 0.0, 1.0);
+    switch (kind) {
+    case 1: return p; // straight
+    case 2: return 1 - std::exp(-6 * p) * std::cos(3 * 3.14159265358979 * p) * (1 - p); // bounce: past it and back
+    case 3: return p < 1 ? 0 : 1; // jump
+    default: return p * p * (3 - 2 * p); // smooth
+    }
+}
 
 struct Clip {
     // Media = a video/picture/sound file. Adjustment = no file, its effects apply to
@@ -64,6 +78,15 @@ struct Clip {
     float rotation = 0; // degrees, clockwise
     bool flipH = false, flipV = false;
     bool fill = false;  // cover the whole frame (cutting off what hangs over) instead of fitting inside it
+    bool blurFill = false; // the bars around it show a blurred, zoomed copy instead of black
+    // Its frame (handy for a facecam): a shape, a border and a shadow
+    int shape = 0;              // 0 = rectangle, 1 = rounded corners, 2 = circle
+    float cornerRadius = 0.15f; // (rounded) a fraction of the shorter side
+    float borderWidth = 0.0f;   // a fraction of the shorter side, 0 = none
+    uint8_t borderR = 255, borderG = 255, borderB = 255;
+    float shadow = 0.0f;        // 0..1
+    float shake = 0.0f;         // 0..1, camera shake
+    bool shaped() const { return shape != 0 || borderWidth > 0; }
     bool reverse = false; // plays backwards
     bool freeze = false;  // holds the frame at `in` the whole time
     ChromaKey key;        // green screen
@@ -74,7 +97,11 @@ struct Clip {
     bool duck = false;        // gets quieter while there's talking on other clips (for music)
     float duckAmount = 0.7f;  // 0..1, how much quieter
     bool cropped() const { return cropLeft > 0 || cropRight > 0 || cropTop > 0 || cropBottom > 0; }
-    bool turned() const { return rotation != 0 || flipH || flipV || !keys[size_t(Param::Rotation)].empty(); }
+    bool turned() const
+    {
+        return rotation != 0 || flipH || flipV || !keys[size_t(Param::Rotation)].empty() || shake > 0
+            || !keys[size_t(Param::Shake)].empty();
+    }
 
     // Keyframes for each Param, in time order. None = the setting just stays put.
     std::array<std::vector<Keyframe>, size_t(Param::Count)> keys;
@@ -82,7 +109,7 @@ struct Clip {
     {
         return std::any_of(keys.begin(), keys.end(), [](const auto& k) { return !k.empty(); });
     }
-    // The setting's value at timeline time t: glides smoothly from one keyframe to the next
+    // The setting's value at timeline time t: glides from one keyframe to the next
     // (`still` = the value when it has no keyframes)
     float at(Param p, double t, float still) const
     {
@@ -98,8 +125,7 @@ struct Clip {
         const Keyframe& b = *next;
         const Keyframe& a = *(next - 1);
         double p01 = b.time > a.time ? (local - a.time) / (b.time - a.time) : 1.0;
-        p01 = p01 * p01 * (3 - 2 * p01); // ease in and out
-        return float(a.value + (b.value - a.value) * p01);
+        return float(a.value + (b.value - a.value) * ease(b.ease, p01));
     }
 
     Effects effects;
@@ -242,6 +268,7 @@ private:
     uint64_t m_audioTick = 0;
     std::vector<uint8_t> m_scratch;
     std::vector<uint8_t> m_layer; // one clip's picture, while its effects get applied
+    std::vector<uint8_t> m_background; // the blurred copy behind a clip with "blurred background" on
     std::vector<uint8_t> m_wipe;  // the incoming clip during a wipe, before it's blended in along the soft edge
     std::vector<uint32_t> m_rowScratch; // one row of a moving/zooming picture
     EffectsScratch m_fx;

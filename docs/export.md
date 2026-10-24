@@ -2,7 +2,7 @@
 
 [← Help home](README.md)
 
-Click the big **Export** button (top right), or **File → Export…** (`Ctrl+E`).
+Click the big **Export** button (top right), or **File -> Export…** (`Ctrl+E`).
 
 ## Presets
 
@@ -20,7 +20,7 @@ Change any setting by hand and it switches to *Custom*. It remembers what you us
 
 ## Instant vs normal
 
-- **Instant** copies the video as it is, without redoing it, so it takes seconds. Only works for simple cuts from one video with no titles, effects or other changes.
+- **Instant** copies the pieces of the video straight across, without redoing them, so it takes seconds. Only works for simple cuts from one video with no titles, effects or other changes, and a video can only be cut on certain frames this way, so a piece might start a moment early.
 - **Normal** rebuilds every frame. Needed for everything else.
 
 **Use the graphics card** makes normal exports much faster. If your graphics card can't do it, MixMedia quietly uses the CPU instead.

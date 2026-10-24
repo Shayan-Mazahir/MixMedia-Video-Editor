@@ -41,6 +41,8 @@ qt_add_library(editor_ui STATIC
     QuietCut.h
     SelfUpdate.cpp
     SelfUpdate.h
+    Shortcuts.cpp
+    Shortcuts.h
     SubtitleFile.cpp
     SubtitleFile.h
     SubtitlePanel.cpp

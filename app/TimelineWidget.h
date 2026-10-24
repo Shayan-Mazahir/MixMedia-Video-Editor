@@ -49,6 +49,10 @@ public:
     static QList<WordTime> wordTimes(const TimelineClip& line);
     double duration() const;
 
+    // Markers: spots you've marked, with optional notes (sorted by time)
+    const QList<TimelineMarker>& markers() const { return m_markers; }
+    void setMarkers(QList<TimelineMarker> markers); // e.g. opening a project (no undo step)
+
     // What Ctrl+Z and Ctrl+Shift+Z would do right now ("split", "move"...; empty = nothing to do)
     QString undoName() const { return m_undo.isEmpty() ? QString() : m_undo.last().what; }
     QString redoName() const { return m_redo.isEmpty() ? QString() : m_redo.last().what; }
@@ -94,12 +98,16 @@ public:
     bool removeTrack(int index);                          // only empty ones
 
 public slots:
+    void addMarker(); // at the playhead (or takes away the one that's there)
     void splitAtPlayhead();
     void deleteSelected(bool closeGap = true); // closing the gap = "ripple delete"
     void deleteSelectedKeepGap();
     void selectAll();
     // Holds the frame under the playhead for a couple of seconds, pushing the rest along
     void freezeFrame(double seconds = 2.0);
+    // The video under the playhead to work on: the selected one if it's there, otherwise the
+    // one that covers the most of the picture. -1 = none.
+    int videoAtPlayhead() const;
     void copySelected();
     void cutSelected();
     void paste(); // at the playhead
@@ -130,6 +138,8 @@ protected:
     void keyPressEvent(QKeyEvent* event) override;
     void contextMenuEvent(QContextMenuEvent* event) override;
     void leaveEvent(QEvent* event) override;
+    void mouseDoubleClickEvent(QMouseEvent* event) override;
+    bool event(QEvent* event) override; // (tooltips for markers)
     void showAddTrackMenu(const QPoint& globalPos);
     QRect addTrackButton() const { return QRect(6, 4, HeaderWidth - 12, RulerHeight - 8); } // top-left corner
     void changeEvent(QEvent* event) override;
@@ -143,7 +153,14 @@ private:
         QList<TimelineClip> clips;
         QList<TimelineTrack> tracks;
         QString what = "change"; // what it undoes, for the Edit menu ("Undo split")
+        QList<TimelineMarker> markers {}; // (only for marker changes: the rest leave them be)
+        bool hasMarkers = false;
     };
+    QList<TimelineMarker> m_markers;
+    void pushMarkerUndo(const QString& what);
+    int markerAt(QPoint pos) const; // on the ruler, -1 = none
+    void editMarker(int index);
+    void drawMarkers(QPainter& p);
     void labelUndo(const QString& what) { if (!m_undo.isEmpty()) m_undo.last().what = what; }
 
     // Turning seconds into pixels and back

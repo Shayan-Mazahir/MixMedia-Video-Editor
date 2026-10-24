@@ -124,8 +124,9 @@ ExportDialog::ExportDialog(QSize projectSize, double projectFps, const QString& 
     m_graphicsCard->setToolTip("Falls back to the CPU automatically if your graphics card can't do it");
 
     // Instant = copy the video as it is. Normal = rebuild every frame (needed for titles, fades, ...)
-    m_instant = new QRadioButton("Instant: copy without re-encoding");
-    m_normal = new QRadioButton("Normal: re-encode everything");
+    // (short, because these can't wrap: the note underneath says more)
+    m_instant = new QRadioButton("Instant (takes seconds)");
+    m_normal = new QRadioButton("Normal (works with everything)");
     auto* modes = new QButtonGroup(this);
     modes->addButton(m_instant);
     modes->addButton(m_normal);
@@ -133,7 +134,8 @@ ExportDialog::ExportDialog(QSize projectSize, double projectFps, const QString& 
     m_copyNote->setWordWrap(true);
     m_copyNote->setProperty("role", "hint");
     if (canCopy) {
-        m_copyNote->setText("Instant takes seconds. Cuts snap to the nearest keyframe, so a piece may start a moment early.");
+        m_copyNote->setText("Instant copies the pieces straight across without redoing them. A video can only be cut "
+                            "on certain frames that way, so a piece might start a moment early.");
     } else {
         m_copyNote->setText("Instant isn't available: " + whyNotCopy);
         m_instant->setEnabled(false);
@@ -279,6 +281,9 @@ void ExportDialog::refresh()
     m_quality->setEnabled(reencode);
     m_graphicsCard->setEnabled(reencode);
     adjustSize(); // shrink or grow to fit the rows that are showing
+    // (wrapped notes need their height worked out for the width they really get, or they get squashed)
+    if (layout() && layout()->hasHeightForWidth())
+        resize(width(), std::max(height(), layout()->totalHeightForWidth(width())));
 
     QSize s = size();
     double projectShape = double(m_projectSize.width()) / m_projectSize.height();

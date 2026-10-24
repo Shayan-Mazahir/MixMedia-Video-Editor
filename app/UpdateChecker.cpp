@@ -213,7 +213,7 @@ bool askForChannel(QWidget* parent)
     auto* pre = new QRadioButton("Yes, releases and pre-releases (test versions, might be a bit rough)");
     auto* off = new QRadioButton("No, don't check");
     releases->setChecked(true);
-    auto* later = new QLabel("You can change this any time in Edit → Settings → Updates.");
+    auto* later = new QLabel("You can change this any time in Edit -> Settings -> Updates.");
     later->setProperty("role", "hint");
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok);
     QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <memory>
 #include <thread>
 #include <vector>
 
@@ -56,6 +57,8 @@ struct Effects {
     float blur = 0;        //  0..1
     float sharpen = 0;     //  0..1
     float vignette = 0;    //  0..1  (darker corners)
+    std::shared_ptr<const struct Lut> lut; // a look from a .cube file (none = null)
+    float lutAmount = 1;   //  0..1, how much of it
 
     bool any() const;
 };
@@ -65,6 +68,7 @@ struct EffectsScratch {
     std::vector<uint8_t> temp;
     std::vector<uint8_t> blurred;
     std::vector<uint8_t> small; // a shrunk copy, for big blurs
+    std::vector<uint8_t> alpha, alpha2; // green screen edges
     std::vector<uint8_t> vignetteMask;
     int maskW = 0, maskH = 0;
     float maskAmount = -1;
@@ -77,10 +81,16 @@ struct ChromaKey {
     float strength = 0.4f;         // 0..1, how far from that colour still counts
     float softness = 0.2f;         // 0..1, how gradual the edge is
     float spill = 0.5f;            // 0..1, how much of the colour's glow to take off what's left
+    float edges = 0.3f;            // 0..1, how much to pull in and soften the edge (cleans up fringes)
+    bool matte = false;            // show what's see-through (black) and what's kept (white), for tuning
 };
-void applyChromaKey(uint8_t* pixels, int w, int h, const ChromaKey& key, bool bgra);
+struct EffectsScratch;
+void applyChromaKey(uint8_t* pixels, int w, int h, const ChromaKey& key, bool bgra, EffectsScratch& scratch);
 
 // Applies the effects to a w x h picture in place (4 bytes per pixel, RGBA or BGRA).
 void applyEffects(uint8_t* pixels, int w, int h, const Effects& fx, bool bgra, EffectsScratch& scratch);
+
+// A soft blur (about Gaussian) of `radius` pixels, in place
+void blurPicture(uint8_t* pixels, int w, int h, int radius, EffectsScratch& scratch);
 
 } // namespace ve

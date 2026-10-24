@@ -40,20 +40,23 @@ The full guide is in [docs/](docs/README.md), and inside the app: press **F1**, 
 - **Auto-captions**: MixMedia listens to your video and writes the subtitles for you, word timings and all (using [whisper.cpp](https://github.com/ggml-org/whisper.cpp), all on your own computer). English by default, about 100 languages, and it can translate into English. The speech model downloads once, the first time, after asking. Four sizes from 57 MB to 1 GB, or bring your own whisper model. A speech detector skips the silence and music, and you can give it names and words to expect.
 - **Cut out the quiet bits**: finds the pauses in your talking and cuts them all out in one go (the jump-cut style), keeping every track in sync.
 - **Titles** with your own text, font, size, colour and position, plus outlines, soft shadows or glows, letter spacing and boxes in any colour. Ten ready-made styles, from lower thirds to neon.
-- **Effects**: one-click looks (black & white, sepia, vintage, vivid, cool, warm, faded, dramatic) plus brightness, contrast, colour, warmth, blur, sharpen and vignette
+- **Effects**: one-click looks (black & white, sepia, vintage, vivid, cool, warm, faded, dramatic) plus brightness, contrast, colour, warmth, blur, sharpen and vignette. Got `.cube` LUTs? Drop them in the `looks` folder and they show up in the Look list, with a strength slider.
 - **Transitions** like Filmora: drop one on a cut and the clip after it slides back to overlap the one before, so both keep playing while they blend (the video gets shorter by the transition's length). Dissolve, fade through black, wipes, slides and zoom, and the sound crossfades too. Change the length in Properties, or delete it to slide everything back. No cut needed either: put one at the start of a clip to bring it in from black, at the end to take it out, or anywhere in the middle to play it on the spot (like an effect, it works on everything below it).
 - **Effect blocks**: drop a look or effect on an FX track and it applies to everything below it, for as long as the block lasts. Stack several on different FX tracks.
 - **Animations**: clips and titles can fade, slide, zoom or wipe in and out
 - **Picture-in-picture**: resize, move and fade any clip over another
-- **Keyframes**: click ◆ next to size, position, opacity, rotation or volume to set its value at the playhead. Add a few and it glides smoothly between them. Diamonds show on the clip in the timeline, and ◀ ◆ / ◆ ▶ jump between them.
-- **Zoom & pan**: zoom into a spot (pick it by clicking the preview), slow zoom in or out, or pan across. Great for screen recordings.
+- **Facecams**: one click for a circle or rounded box in any corner, with a border (any colour) and a soft shadow
+- **Keyframes**: click ◆ next to size, position, opacity, shake, rotation or volume to set its value at the playhead. Add a few and it glides between them: smoothly, straight, with a bounce, or a sudden jump. Diamonds show on the clip in the timeline, and ◀ ◆ / ◆ ▶ jump between them.
+- **Quick zoom**: Punch, Bounce or Smooth zoom-ins in one click (or just press Z), with an optional camera shake when it lands. Zoom & pan has the fine-tuning, plus slow zooms and pans across the whole clip.
 - **Crop, rotate and flip**: trim any edge, turn by any angle (or a quick quarter turn), mirror it, or tick "Fill the frame" to zoom in until there are no black bars
-- **Project shape**: 16:9, tall 9:16 for Shorts / TikTok / Reels, square, 4:5, 4:3 or 21:9, at 720p up to 4K (File → Project settings, or the Shape menu under the preview)
+- **Project shape**: 16:9, tall 9:16 for Shorts / TikTok / Reels, square, 4:5, 4:3 or 21:9, at 720p up to 4K (File -> Project settings, or the Shape menu under the preview)
 - **Speed**: slow motion and fast forward, from 0.1× to 10×, play clips backwards, or freeze a frame (holds it for 2 seconds and pushes the rest along)
-- **Green screen**: remove a background colour (pick it by clicking the preview), with soft edges and green-glow removal
+- **Green screen**: green, blue, red, purple, yellow, white or black screens (or "Find it" guesses the colour for you), with edge clean-up, glow removal and a see-through view for tuning
+- **Blurred background**: fills the black bars with a blurred copy of the video, like phones do
+- **Markers**: press M to mark a spot, double-click it for a note. Clips snap to them.
 - **Precise controls**: every slider has a box for typing exact numbers
-- **Drag files in** straight from your file manager, plus right-click menus and keyboard shortcuts (arrows to step frames, ↑ ↓ to jump between cuts)
-- **Settings → Performance**: let MixMedia decide, or choose how many CPU threads it uses and whether the graphics card helps out
+- **Drag files in** straight from your file manager, plus right-click menus and keyboard shortcuts (arrows to step frames, ↑ ↓ to jump between cuts). Change any shortcut in Settings -> Shortcuts.
+- **Settings -> Performance**: let MixMedia decide, or choose how many CPU threads it uses and whether the graphics card helps out
 - **Projects**: save and open `.mixmedia` files
 - **Auto-save**: unsaved work gets a backup copy every minute. If MixMedia crashes, it offers to bring it back next time (your project file is only written when you save).
 - **Export**

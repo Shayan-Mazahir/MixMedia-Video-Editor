@@ -2,6 +2,8 @@
 
 [← Help home](README.md)
 
+These are the usual ones. Don't like one? **Edit -> Settings -> Shortcuts** lets you change any of them (see [Settings](settings.md)).
+
 ## Playing
 
 | Key | What it does |
@@ -9,7 +11,7 @@
 | Space | Play / pause |
 | ← / → | Back / forward one frame |
 | Shift+← / Shift+→ | Back / forward one second |
-| ↑ / ↓ | Previous / next cut |
+| ↑ / ↓ | Previous / next cut or marker |
 | Home / End | Go to the start / end |
 
 ## Editing
@@ -24,6 +26,8 @@
 | Ctrl+click | Add a clip to the selection |
 | Ctrl+D | Detach audio |
 | Ctrl+T | Add a title |
+| M | Add a marker (again to take it away) |
+| Z | Zoom in here (the way Zoom & pan is set up) |
 | Ctrl+Shift+F | Freeze frame |
 | Ctrl+Z | Undo |
 | Ctrl+Shift+Z or Ctrl+Y | Redo |

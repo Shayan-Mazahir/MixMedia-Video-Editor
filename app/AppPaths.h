@@ -17,6 +17,7 @@ class QWidget;
 //     settings.ini   your settings
 //     models/        speech models for auto-captions (drop your own in here too)
 //     fonts/         extra fonts for titles and subtitles (.ttf, .otf)
+//     looks/         colour looks (.cube files) for the Look list
 //     autosave/      backups, in case it crashes
 //     cache/         pictures it can make again (safe to delete)
 namespace AppPaths {
@@ -33,6 +34,7 @@ QString models();
 QString fonts();
 QString autosave();
 QString cache();
+QString looks(); // .cube colour looks (LUTs) for the Look list
 
 // The settings (use like a QSettings: AppPaths::settings().value(...))
 QSettings settings();

@@ -236,6 +236,44 @@ bool Timeline::renderVideoDirect(double t, int w, int h, AVFrame* out)
 
 namespace {
 
+// How far a point is outside a clip's shape (negative = inside), in pixels of its w x h box
+float shapeDistance(float px, float py, float w, float h, const Clip& c)
+{
+    const float dx = std::abs(px - w / 2), dy = std::abs(py - h / 2);
+    if (c.shape == 2)
+        return std::hypot(dx, dy) - std::min(w, h) / 2; // (the biggest circle that fits)
+    const float r = c.shape == 1 ? std::clamp(c.cornerRadius, 0.0f, 0.5f) * std::min(w, h) : 0.0f;
+    const float qx = dx - (w / 2 - r), qy = dy - (h / 2 - r);
+    return std::hypot(std::max(qx, 0.0f), std::max(qy, 0.0f)) + std::min(std::max(qx, qy), 0.0f) - r;
+}
+
+// Cuts a clip's picture to its shape (smooth edged) and draws its border just inside the edge.
+// The picture can be just part of the clip: (offX, offY) is where it sits in the whole w x h box.
+void applyShape(uint8_t* px, int pw, int ph, int offX, int offY, int w, int h, const Clip& c, bool bgra)
+{
+    const float border = c.borderWidth * std::min(w, h);
+    const uint8_t colour[3] = { bgra ? c.borderB : c.borderR, c.borderG, bgra ? c.borderR : c.borderB };
+    parallelRows(ph, [&](int y0, int y1) {
+        for (int y = y0; y < y1; ++y) {
+            uint8_t* p = px + size_t(y) * pw * 4;
+            for (int x = 0; x < pw; ++x, p += 4) {
+                const float d = shapeDistance(x + offX + 0.5f, y + offY + 0.5f, float(w), float(h), c);
+                if (d < -border - 1.0f)
+                    continue; // (well inside: untouched)
+                const float cover = std::clamp(0.5f - d, 0.0f, 1.0f);
+                if (border > 0) {
+                    // Inside the border's inner edge = the picture; between that and the edge = border
+                    const float inner = std::clamp(0.5f - (d + border), 0.0f, 1.0f);
+                    for (int k = 0; k < 3; ++k)
+                        p[k] = uint8_t(p[k] * inner + colour[k] * (1.0f - inner) + 0.5f);
+                    p[3] = uint8_t(p[3] * inner + 255.0f * (1.0f - inner) + 0.5f);
+                }
+                p[3] = uint8_t(p[3] * cover + 0.5f);
+            }
+        }
+    });
+}
+
 double smooth(double p) // eases in and out, so movement doesn't start or stop with a jolt
 {
     p = std::clamp(p, 0.0, 1.0);
@@ -246,6 +284,23 @@ double easeOut(double p) // fast start, gentle landing
 {
     p = std::clamp(p, 0.0, 1.0);
     return 1 - (1 - p) * (1 - p) * (1 - p);
+}
+
+// A smooth, random-looking wiggle between -1 and 1 (always the same for the same t, so the
+// preview and the export shake the same way)
+double wobble(double t, int seed)
+{
+    auto noise = [seed](double at) {
+        auto random = [seed](int64_t i) {
+            uint32_t h = uint32_t(i) * 374761393u + uint32_t(seed) * 668265263u;
+            h = (h ^ (h >> 13)) * 1274126177u;
+            return (h ^ (h >> 16)) / 2147483647.5 - 1.0;
+        };
+        const double i = std::floor(at), f = at - i;
+        const double a = random(int64_t(i)), b = random(int64_t(i) + 1);
+        return a + (b - a) * f * f * (3 - 2 * f);
+    };
+    return 0.7 * noise(t) + 0.3 * noise(t * 2.3 + 17);
 }
 
 } // namespace
@@ -343,9 +398,19 @@ void Timeline::drawSlot(Slot& s, double t, int w, int h, uint8_t* canvas, bool b
     const double ch = std::max(2.0, frame->height * (1.0 - c.cropTop - c.cropBottom));
     // Turned a quarter? Then it's the other way round when fitting it into the frame
     // Where it is right now (any of these can be keyframed)
-    const double rotation = c.at(Param::Rotation, t, c.rotation);
-    const double scaleNow = c.at(Param::Scale, t, c.scale);
-    const double posX = c.at(Param::PosX, t, c.posX), posY = c.at(Param::PosY, t, c.posY);
+    double rotation = c.at(Param::Rotation, t, c.rotation);
+    double scaleNow = c.at(Param::Scale, t, c.scale);
+    double posX = c.at(Param::PosX, t, c.posX), posY = c.at(Param::PosY, t, c.posY);
+    // Camera shake: jiggles it about and tilts it a touch. A full-size clip gets zoomed in a
+    // little too, so the shaking doesn't show its edges.
+    if (const double shake = std::clamp(double(c.at(Param::Shake, t, c.shake)), 0.0, 1.0); shake > 0) {
+        const double s = (t - c.start) * 12;
+        posX += shake * 0.02 * wobble(s, 1);
+        posY += shake * 0.02 * wobble(s, 2);
+        rotation += shake * 1.2 * wobble(s, 3);
+        if (scaleNow >= 0.999)
+            scaleNow = std::max(scaleNow, 1 + 0.09 * shake);
+    }
     const double quarter = std::abs(std::remainder(rotation, 180.0));
     const bool sideways = std::abs(quarter - 90.0) < 0.01;
     const double boxW = sideways ? ch : cw, boxH = sideways ? cw : ch;
@@ -370,15 +435,83 @@ void Timeline::drawSlot(Slot& s, double t, int w, int h, uint8_t* canvas, bool b
     boxX1 = std::min(boxX1, x + int(std::lround(fw * std::min(wipeIn, wipeOut))));
     int x0 = std::max(x, boxX0), x1 = std::min(x + fw, boxX1);
     int y0 = std::max(y, boxY0), y1 = std::min(y + fh, boxY1);
+    const FrameCrop crop { c.cropLeft, c.cropRight, c.cropTop, c.cropBottom };
+
+    // Blurred background: wherever the picture leaves a gap (black bars, or it's been made
+    // smaller), a blurred copy of it, zoomed in to cover the whole frame and a bit darker,
+    // so the real thing stands out. Done tiny (an eighth of the size): once it's that blurry,
+    // nobody can tell, and it's quick.
+    if (c.blurFill && !c.fill && (x > 0 || y > 0 || x + fw < w || y + fh < h)) {
+        const double cover = std::max(w / cw, h / ch);
+        const double coverW = cw * cover, coverH = ch * cover;
+        const int sw = std::max(8, int(coverW / 8)), sh = std::max(8, int(coverH / 8));
+        m_background.resize(size_t(sw) * sh * 4);
+        if (reader->scale(frame, sw, sh, m_background.data(), sw * 4, bgra, crop)) {
+            blurPicture(m_background.data(), sw, sh, std::max(2, sw / 25), m_fx);
+            const double left = (w - coverW) / 2 + mods.dx, top = (h - coverH) / 2 + mods.dy;
+            // Which two tiny pixels each column of the frame sits between (the same on every row)
+            std::vector<int> l(static_cast<size_t>(w)), r(static_cast<size_t>(w)), across(static_cast<size_t>(w));
+            for (int X = 0; X < w; ++X) {
+                const double sx = std::clamp((X + 0.5 - left) / coverW * sw - 0.5, 0.0, sw - 1.0);
+                l[size_t(X)] = int(sx) * 4;
+                r[size_t(X)] = std::min(int(sx) + 1, sw - 1) * 4;
+                across[size_t(X)] = int((sx - int(sx)) * 256);
+            }
+            const int dim = 200; // (out of 256: a bit darker)
+            const int mix = int(std::clamp(opacity, 0.0, 1.0) * 256);
+            const uint8_t* bg = m_background.data();
+            parallelRows(boxY1 - boxY0, [&](int r0, int r1) {
+                for (int Y = boxY0 + r0; Y < boxY0 + r1; ++Y) {
+                    const double sy = std::clamp((Y + 0.5 - top) / coverH * sh - 0.5, 0.0, sh - 1.0);
+                    const int ty = int(sy), by = std::min(ty + 1, sh - 1), wy = int((sy - ty) * 256);
+                    const uint8_t* rowT = bg + size_t(ty) * sw * 4;
+                    const uint8_t* rowB = bg + size_t(by) * sw * 4;
+                    uint8_t* d = canvas + (size_t(Y) * w + boxX0) * 4;
+                    for (int X = boxX0; X < boxX1; ++X, d += 4) {
+                        const int a = l[size_t(X)], b = r[size_t(X)], wx = across[size_t(X)];
+                        for (int k = 0; k < 3; ++k) {
+                            const int upper = rowT[a + k] * (256 - wx) + rowT[b + k] * wx;
+                            const int lower = rowB[a + k] * (256 - wx) + rowB[b + k] * wx;
+                            const int v = (((upper * (256 - wy) + lower * wy) >> 16) * dim) >> 8;
+                            d[k] = uint8_t(d[k] + (((v - d[k]) * mix) >> 8));
+                        }
+                        d[3] = 255;
+                    }
+                }
+            });
+        }
+    }
+
+    // A soft shadow behind it, a little down and to the right (worked out from its shape, so
+    // it's smooth without any blurring)
+    if (c.shadow > 0 && !c.turned()) {
+        const float shortSide = float(std::min(fw, fh));
+        const float drop = shortSide * 0.04f, soft = std::max(2.0f, shortSide * 0.07f);
+        const float strength = c.shadow * 0.75f * float(opacity);
+        const int sx0 = std::max(boxX0, int(x + drop - soft * 2)), sx1 = std::min(boxX1, int(x + fw + drop + soft * 2));
+        const int sy0 = std::max(boxY0, int(y + drop - soft * 2)), sy1 = std::min(boxY1, int(y + fh + drop + soft * 2));
+        if (sx0 < sx1 && sy0 < sy1)
+            parallelRows(sy1 - sy0, [&](int r0, int r1) {
+                for (int Y = sy0 + r0; Y < sy0 + r1; ++Y) {
+                    uint8_t* d = canvas + (size_t(Y) * w + sx0) * 4;
+                    for (int X = sx0; X < sx1; ++X, d += 4) {
+                        const float dist = shapeDistance(X + 0.5f - x - drop, Y + 0.5f - y - drop, float(fw), float(fh), c);
+                        const float a = std::clamp(0.5f - dist / soft, 0.0f, 1.0f) * strength;
+                        for (int k = 0; k < 3; ++k)
+                            d[k] = uint8_t(d[k] * (1.0f - a));
+                    }
+                }
+            });
+    }
+
     if (!c.turned() && (x0 >= x1 || y0 >= y1))
         return;
 
-    const FrameCrop crop { c.cropLeft, c.cropRight, c.cropTop, c.cropBottom };
-    bool solid = opacity >= 1.0 && !hasAlpha(frame) && !c.key.on;
+    bool solid = opacity >= 1.0 && !hasAlpha(frame) && !c.key.on && !c.shaped();
     // Green screen first (it needs the original colours), then the effects
     auto treat = [&](uint8_t* px, int pw, int ph) {
         if (c.key.on)
-            applyChromaKey(px, pw, ph, c.key, bgra);
+            applyChromaKey(px, pw, ph, c.key, bgra, m_fx);
         if (c.effects.any())
             applyEffects(px, pw, ph, c.effects, bgra, m_fx);
     };
@@ -415,6 +548,8 @@ void Timeline::drawSlot(Slot& s, double t, int w, int h, uint8_t* canvas, bool b
         if (!reader->scale(frame, ow, oh, m_scratch.data(), ow * 4, bgra, region))
             return;
         treat(m_scratch.data(), ow, oh);
+        if (c.shaped())
+            applyShape(m_scratch.data(), ow, oh, ox - x, oy - y, fw, fh, c, bgra);
         const int dx0 = std::max(x0, ox), dx1 = std::min(x1, ox + ow);
         for (int row = std::max(y0, oy); row < std::min(y1, oy + oh); ++row) {
             if (dx0 >= dx1)
@@ -447,7 +582,7 @@ void Timeline::drawSlot(Slot& s, double t, int w, int h, uint8_t* canvas, bool b
             std::copy(cropKey, cropKey + 4, s.stillCrop);
         }
         pixels = s.still.data();
-    } else if (solid && wholeCanvas && !effects && !c.turned()) {
+    } else if (solid && wholeCanvas && !effects && !c.turned() && !c.shaped()) {
         reader->scale(frame, w, h, canvas, w * 4, bgra, crop);
         return;
     } else {
@@ -461,6 +596,12 @@ void Timeline::drawSlot(Slot& s, double t, int w, int h, uint8_t* canvas, bool b
         // Work on a copy, so a cached still picture stays untouched
         m_layer.assign(pixels, pixels + size_t(fw) * fh * 4);
         treat(m_layer.data(), fw, fh);
+        pixels = m_layer.data();
+    }
+    if (c.shaped()) {
+        if (!effects) // (a copy, as above)
+            m_layer.assign(pixels, pixels + size_t(fw) * fh * 4);
+        applyShape(m_layer.data(), fw, fh, 0, 0, fw, fh, c, bgra);
         pixels = m_layer.data();
     }
 

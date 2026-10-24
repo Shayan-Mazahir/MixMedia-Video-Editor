@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shayan Mazahir. Part of MixMedia Video Editor, see NOTICE.
 
 #include "effects.h"
+#include "lut.h"
 
 #include <algorithm>
 #include <atomic>
@@ -122,42 +123,180 @@ LookRecipe recipeFor(Look look)
 
 } // namespace
 
-void applyChromaKey(uint8_t* pixels, int w, int h, const ChromaKey& key, bool bgra)
-{
-    // Compare colours by their tint only (blue-ness and red-ness, ignoring brightness), so
-    // shadows and bright patches on the screen still count as the screen
-    auto tint = [](float r, float g, float b, float& cb, float& cr) {
-        cb = -0.1146f * r - 0.3854f * g + 0.5f * b;
-        cr = 0.5f * r - 0.4542f * g - 0.0458f * b;
-    };
-    float keyCb, keyCr;
-    tint(key.r, key.g, key.b, keyCb, keyCr);
-    const float reach = std::max(1.0f, std::hypot(keyCb, keyCr)); // how far the key is from grey
-    const float inner = std::clamp(key.strength, 0.0f, 1.0f) * reach;
-    const float edge = std::max(1.0f, std::clamp(key.softness, 0.0f, 1.0f) * reach);
-    // Spill: green (or blue) light bouncing onto the subject. Pull that channel down to the others.
-    const int spillChannel = key.g >= key.r && key.g >= key.b ? 1 : (key.b >= key.r ? 2 : -1);
-    const float spill = std::clamp(key.spill, 0.0f, 1.0f);
-    const int R = bgra ? 2 : 0, B = bgra ? 0 : 2;
+namespace {
 
-    parallelRows(h, [&](int y0, int y1) {
-        for (int y = y0; y < y1; ++y) {
-            uint8_t* p = pixels + size_t(y) * w * 4;
-            for (int x = 0; x < w; ++x, p += 4) {
-                float cb, cr;
-                tint(p[R], p[1], p[B], cb, cr);
-                float d = std::hypot(cb - keyCb, cr - keyCr);
-                float keep = std::clamp((d - inner) / edge, 0.0f, 1.0f);
-                p[3] = uint8_t(p[3] * keep);
-                if (spillChannel >= 0 && spill > 0 && keep > 0) {
-                    int c = spillChannel == 1 ? 1 : B;
-                    int others = spillChannel == 1 ? std::max(p[R], p[B]) : std::max(p[R], p[1]);
-                    if (p[c] > others)
-                        p[c] = uint8_t(p[c] - (p[c] - others) * spill);
+// The edge clean-up: pulls the kept part in by `in` pixels (so the fringe of screen colour round
+// it goes), then softens it by `soft` pixels (so it isn't jagged). Works on just the alpha.
+void cleanEdges(uint8_t* pixels, int w, int h, int in, int soft, EffectsScratch& scratch)
+{
+    const size_t n = size_t(w) * h;
+    scratch.alpha.resize(n);
+    scratch.alpha2.resize(n);
+    uint8_t* a = scratch.alpha.data();
+    uint8_t* b = scratch.alpha2.data();
+    for (size_t i = 0; i < n; ++i)
+        a[i] = pixels[i * 4 + 3];
+    // Pull in: each pixel takes the smallest alpha around it (across, then down)
+    if (in > 0) {
+        parallelRows(h, [&](int y0, int y1) {
+            for (int y = y0; y < y1; ++y)
+                for (int x = 0; x < w; ++x) {
+                    uint8_t m = 255;
+                    for (int k = std::max(0, x - in); k <= std::min(w - 1, x + in); ++k)
+                        m = std::min(m, a[size_t(y) * w + k]);
+                    b[size_t(y) * w + x] = m;
+                }
+        });
+        parallelRows(h, [&](int y0, int y1) {
+            for (int y = y0; y < y1; ++y)
+                for (int x = 0; x < w; ++x) {
+                    uint8_t m = 255;
+                    for (int k = std::max(0, y - in); k <= std::min(h - 1, y + in); ++k)
+                        m = std::min(m, b[size_t(k) * w + x]);
+                    a[size_t(y) * w + x] = m;
+                }
+        });
+    }
+    // Soften: a little blur on the alpha only (a box blur across and down, twice)
+    for (int pass = 0; pass < 2 && soft > 0; ++pass) {
+        const int span = 2 * soft + 1;
+        parallelRows(h, [&](int y0, int y1) {
+            for (int y = y0; y < y1; ++y) {
+                const uint8_t* row = a + size_t(y) * w;
+                int sum = 0;
+                for (int k = -soft; k <= soft; ++k)
+                    sum += row[std::clamp(k, 0, w - 1)];
+                for (int x = 0; x < w; ++x) {
+                    b[size_t(y) * w + x] = uint8_t(sum / span);
+                    sum += row[std::min(x + soft + 1, w - 1)] - row[std::max(x - soft, 0)];
                 }
             }
+        });
+        parallelRows(w, [&](int x0, int x1) {
+            for (int x = x0; x < x1; ++x) {
+                int sum = 0;
+                for (int k = -soft; k <= soft; ++k)
+                    sum += b[size_t(std::clamp(k, 0, h - 1)) * w + x];
+                for (int y = 0; y < h; ++y) {
+                    a[size_t(y) * w + x] = uint8_t(sum / span);
+                    sum += b[size_t(std::min(y + soft + 1, h - 1)) * w + x] - b[size_t(std::max(y - soft, 0)) * w + x];
+                }
+            }
+        });
+    }
+    // (never more solid than it was: softening only ever takes away)
+    for (size_t i = 0; i < n; ++i)
+        pixels[i * 4 + 3] = std::min(pixels[i * 4 + 3], a[i]);
+}
+
+} // namespace
+
+void applyChromaKey(uint8_t* pixels, int w, int h, const ChromaKey& key, bool bgra, EffectsScratch& scratch)
+{
+    const int R = bgra ? 2 : 0, B = bgra ? 0 : 2;
+    // A colour's "tint": which way it leans away from grey, and how far, compared to how bright it
+    // is. The same in a screen's shadows as in its bright patches, so uneven lighting doesn't matter.
+    auto tint = [](float r, float g, float b, float out[3]) {
+        const float mean = (r + g + b) / 3.0f, top = std::max({ r, g, b, 24.0f });
+        out[0] = (r - mean) / top;
+        out[1] = (g - mean) / top;
+        out[2] = (b - mean) / top;
+    };
+    float keyTint[3];
+    tint(key.r, key.g, key.b, keyTint);
+    const float keyStrength2 = keyTint[0] * keyTint[0] + keyTint[1] * keyTint[1] + keyTint[2] * keyTint[2];
+    const float keyLength = std::sqrt(keyStrength2);
+    // Starts going see-through this much of the way towards the screen, completely gone a bit after
+    const float from = 1.0f - std::clamp(key.strength, 0.0f, 1.0f) * 0.9f;
+    const float span = 0.02f + std::clamp(key.softness, 0.0f, 1.0f) * 0.6f;
+    // (50% on the slider already takes most of the glow off: edges are where it shows most)
+    const float spill = std::min(1.0f, std::clamp(key.spill, 0.0f, 1.0f) * 1.6f);
+
+    if (keyLength > 0.12f) {
+        // A colourful screen (green, blue, red, purple, yellow...): how far each pixel leans the
+        // same way as the screen, minus how much it leans some other way (so skin on a red screen,
+        // or a red shirt on a purple one, doesn't go with it). 1 = as much as the screen itself.
+        const float dir[3] = { keyTint[0] / keyLength, keyTint[1] / keyLength, keyTint[2] / keyLength };
+        parallelRows(h, [&](int y0, int y1) {
+            for (int y = y0; y < y1; ++y) {
+                uint8_t* p = pixels + size_t(y) * w * 4;
+                for (int x = 0; x < w; ++x, p += 4) {
+                    float c[3];
+                    tint(p[R], p[1], p[B], c);
+                    const float along = c[0] * dir[0] + c[1] * dir[1] + c[2] * dir[2];
+                    const float off[3] = { c[0] - along * dir[0], c[1] - along * dir[1], c[2] - along * dir[2] };
+                    const float sideways = std::sqrt(off[0] * off[0] + off[1] * off[1] + off[2] * off[2]);
+                    const float t = (along - 0.8f * sideways) / keyLength;
+                    const float gone = std::clamp((t - from) / span, 0.0f, 1.0f);
+                    p[3] = uint8_t(p[3] * (1.0f - gone));
+                    // The screen's glow on what's left: take that tint back out (keeping its brightness).
+                    // Only near the screen's colour (edges, hair): further in, a colour that just
+                    // happens to lean the same way (skin on a red or yellow screen) is left alone.
+                    // (eases in from a quarter of the way to the screen's colour, full strength by the edge)
+                    const float lean = std::clamp((t - 0.25f * from) / (0.75f * from), 0.0f, 1.0f);
+                    const float near = lean * lean * (3 - 2 * lean);
+                    if (spill > 0 && p[3] > 0 && near > 0) {
+                        const float mean = (p[R] + p[1] + p[B]) / 3.0f;
+                        const float cast = (p[R] - mean) * dir[0] + (p[1] - mean) * dir[1] + (p[B] - mean) * dir[2];
+                        if (cast > 0) {
+                            const int idx[3] = { R, 1, B };
+                            for (int k = 0; k < 3; ++k)
+                                p[idx[k]] = uint8_t(std::clamp(p[idx[k]] - cast * spill * near * dir[k], 0.0f, 255.0f));
+                        }
+                    }
+                }
+            }
+        });
+    } else {
+        // A white, black or grey screen: no tint to go by, so by how close the colour (and brightness) is
+        const float reach = 0.02f + std::clamp(key.strength, 0.0f, 1.0f) * 0.5f;
+        const float soft = 0.02f + std::clamp(key.softness, 0.0f, 1.0f) * 0.3f;
+        parallelRows(h, [&](int y0, int y1) {
+            for (int y = y0; y < y1; ++y) {
+                uint8_t* p = pixels + size_t(y) * w * 4;
+                for (int x = 0; x < w; ++x, p += 4) {
+                    const float dr = p[R] - key.r, dg = p[1] - key.g, db = p[B] - key.b;
+                    const float d = std::sqrt(dr * dr + dg * dg + db * db) / 441.7f; // (0..1, 441.7 = all the way)
+                    const float gone = std::clamp((reach - d) / soft, 0.0f, 1.0f);
+                    p[3] = uint8_t(p[3] * (1.0f - gone));
+                }
+            }
+        });
+    }
+    const int size = std::max(w, h);
+    const float edges = std::clamp(key.edges, 0.0f, 1.0f);
+    if (edges > 0)
+        // Pulls in by about 1-2 pixels at the usual 30% (where the person and screen blend: the
+        // outline), more when turned up. Grows faster than the slider, so low settings keep fine hair.
+        cleanEdges(pixels, w, h, int(std::lround(edges * edges * 0.012 * size)), std::max(1, int(std::lround(edges * 0.003 * size))), scratch);
+    // Anything partly see-through now is right on the edge, where the person and the screen
+    // blend: take the screen's tint right out of those, so no coloured outline's left
+    if (keyLength > 0.12f && spill > 0) {
+        const float dir[3] = { keyTint[0] / keyLength, keyTint[1] / keyLength, keyTint[2] / keyLength };
+        const int idx[3] = { R, 1, B };
+        parallelRows(h, [&](int y0, int y1) {
+            for (int y = y0; y < y1; ++y) {
+                uint8_t* p = pixels + size_t(y) * w * 4;
+                for (int x = 0; x < w; ++x, p += 4) {
+                    if (p[3] == 0 || p[3] >= 250)
+                        continue;
+                    const float mean = (p[R] + p[1] + p[B]) / 3.0f;
+                    const float cast = (p[R] - mean) * dir[0] + (p[1] - mean) * dir[1] + (p[B] - mean) * dir[2];
+                    if (cast > 0)
+                        for (int k = 0; k < 3; ++k)
+                            p[idx[k]] = uint8_t(std::clamp(p[idx[k]] - cast * dir[k], 0.0f, 255.0f));
+                }
+            }
+        });
+    }
+    if (key.matte) {
+        // Black = gone, white = kept
+        for (size_t i = 0; i < size_t(w) * h; ++i) {
+            uint8_t* p = pixels + i * 4;
+            p[0] = p[1] = p[2] = p[3];
+            p[3] = 255;
         }
-    });
+    }
 }
 
 namespace {
@@ -359,10 +498,16 @@ void applySharpen(uint8_t* pixels, int w, int h, float amount, EffectsScratch& s
 
 } // namespace
 
+void blurPicture(uint8_t* pixels, int w, int h, int radius, EffectsScratch& scratch)
+{
+    if (radius >= 1 && w > 0 && h > 0)
+        bigBlur(pixels, w, h, radius, 3, scratch);
+}
+
 bool Effects::any() const
 {
     return look != Look::None || brightness != 0 || contrast != 0 || saturation != 0 || temperature != 0
-           || blur != 0 || sharpen != 0 || vignette != 0;
+           || blur != 0 || sharpen != 0 || vignette != 0 || (lut && lutAmount > 0);
 }
 
 void applyEffects(uint8_t* pixels, int w, int h, const Effects& fx, bool bgra, EffectsScratch& scratch)
@@ -386,6 +531,9 @@ void applyEffects(uint8_t* pixels, int w, int h, const Effects& fx, bool bgra, E
     }
     if (fx.sharpen > 0)
         applySharpen(pixels, w, h, fx.sharpen, scratch);
+    // A look from a file goes on before the sliders, so they can tweak it
+    if (fx.lut && fx.lutAmount > 0)
+        applyLut(pixels, w, h, *fx.lut, fx.lutAmount, bgra);
 
     ColorMatrix color = contrastMatrix(contrast, brightness)
                             .after(temperatureMatrix(temperature))

@@ -51,7 +51,7 @@ std::optional<Release> pickUpdate(const QList<Release>& releases, const QVersion
 
 // Opened fresh: asks which updates you'd like (the first time), then checks if it's been a day
 void checkAtStartup(QWidget* parent);
-// Help → Check for updates
+// Help -> Check for updates
 void checkNow(QWidget* parent);
 
 } // namespace UpdateChecker

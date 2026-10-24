@@ -4,11 +4,11 @@
 
 ## Appearance
 
-**Edit → Settings… → Appearance**: **Dark**, **Light**, or **Match the system** (it follows your computer when that switches between light and dark). Changes show straight away; Cancel puts it back.
+**Edit -> Settings… -> Appearance**: **Dark**, **Light**, or **Match the system** (it follows your computer when that switches between light and dark). Changes show straight away; Cancel puts it back.
 
 ## Project shape and size
 
-The **Shape** menu under the preview, or **File → Project settings…** for everything:
+The **Shape** menu under the preview, or **File -> Project settings…** for everything:
 
 - **Shape**: *Auto* (same as the first video), 16:9 widescreen, 9:16 tall (Shorts, TikTok, Reels), 1:1 square, 4:5 portrait, 4:3 or 21:9 cinema.
 - **Size**: 720p up to 4K.
@@ -18,12 +18,22 @@ Clips that are a different shape get black bars. To fill the frame instead, sele
 
 ## Performance
 
-**Edit → Settings…** → Performance. Normally MixMedia works out by itself how much of your computer to use. Tick **Let me choose** to decide yourself:
+**Edit -> Settings…** -> Performance. Normally MixMedia works out by itself how much of your computer to use. Tick **Let me choose** to decide yourself:
 
 - **CPU threads**: how many it may use at once for the preview, effects, exporting and auto-captions. Fewer keeps the rest of the computer snappier (handy while exporting, or on battery), but things take longer.
 - **Use the graphics card for exporting** / **for auto-captions**.
 
 These are for this computer, not saved in projects.
+
+## Shortcuts
+
+Change the keys for anything in the menus:
+
+1. **Edit -> Settings -> Shortcuts**, and click what you'd like to change.
+2. Click the **Keys** box and press the new keys (like **Ctrl+K**).
+3. Press **OK**.
+
+Already used by something else? That one loses it (MixMedia tells you which), so two things never share keys. **None** takes a shortcut away, **Back to normal** puts one back, and **Put them all back to normal** resets the lot. The ones you've changed show in **bold**. They're saved in `settings.ini`, under `[shortcuts]`.
 
 ## Auto-save
 
@@ -43,13 +53,14 @@ Inside it:
 |---|---|
 | `settings.ini` | Your settings |
 | `models` | Speech models for [auto-captions](subtitles.md). Drop your own in here too |
+| `looks` | Your own colour looks (`.cube` files) for the Look list, see [Effects](effects-and-transitions.md) |
 | `fonts` | Extra fonts for titles and subtitles. Drop `.ttf` or `.otf` files in, and they're there next time MixMedia starts |
 | `autosave` | The backups, in case it crashes |
 | `cache` | Pictures MixMedia can make again (fine to delete) |
 
-**Settings → Files** shows where it is, with a button to open it. To **uninstall**, delete the MixMedia folder and everything goes with it (the Windows uninstaller does the same).
+**Settings -> Files** shows where it is, with a button to open it. To **uninstall**, delete the MixMedia folder and everything goes with it (the Windows uninstaller does the same).
 
-If MixMedia was installed somewhere it can't write to (like *Program Files* when installed "for everyone"), the folder goes in your user folder instead (`AppData\Local\MixMedia` on Windows, `~/.local/share/MixMedia` on Linux). Settings → Files tells you which.
+If MixMedia was installed somewhere it can't write to (like *Program Files* when installed "for everyone"), the folder goes in your user folder instead (`AppData\Local\MixMedia` on Windows, `~/.local/share/MixMedia` on Linux). Settings -> Files tells you which.
 
 ## Updates
 
@@ -67,6 +78,6 @@ When it's on, MixMedia checks when you open it, at most once a day. It never int
 
 **Update now** works with the AppImage and the Linux folder download, as long as MixMedia's folder can be written to. On Windows, run the new installer: it updates MixMedia in place and keeps your data folder.
 
-**Help → Check for updates…** (or **Check now** in **Edit → Settings… → Updates**) checks straight away, any time. Change your choice in **Edit → Settings… → Updates**.
+**Help -> Check for updates…** (or **Check now** in **Edit -> Settings… -> Updates**) checks straight away, any time. Change your choice in **Edit -> Settings… -> Updates**.
 
 The only thing sent is the question "which versions are there?" to GitHub. Nothing about you or your videos.

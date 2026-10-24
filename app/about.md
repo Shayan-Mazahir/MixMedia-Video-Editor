@@ -12,7 +12,7 @@ MixMedia only goes online twice: to check for updates (you can turn that off in 
 
 ### You're in charge
 
-It's your computer, so you decide how MixMedia uses it. How much of your CPU and graphics card it gets, which speech models it downloads (or bring your own), whether it checks for updates and which kind, light or dark, where the panels go, extra fonts... Pretty much everything's a setting, and the settings are all in one plain [settings.ini](folder:) file if you'd rather poke at it directly. 
+It's your computer, so you decide how MixMedia uses it. How much of your CPU and graphics card it gets, which speech models it downloads (or bring your own), whether it checks for updates and which kind, light or dark, where the panels go, your keyboard shortcuts, your own fonts and colour looks... Pretty much everything's a setting, and the settings are all in one plain [settings.ini](folder:) file if you'd rather poke at it directly. 
 
 And of course I will aim to make it as much customizable as I can, so that you can have control over pretty much everything :D
 

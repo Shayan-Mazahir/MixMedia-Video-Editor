@@ -19,7 +19,7 @@ Bigger is more accurate, but slower, and uses more memory while it works. Start 
 
 ## Where they're kept
 
-In the **models** folder inside **MixMedia data** (next to MixMedia itself). The quickest way there: **Settings → Files → Open the folder**, or the **Models folder** button in the auto-captions window.
+In the **models** folder inside **MixMedia data** (next to MixMedia itself). The quickest way there: **Settings -> Files -> Open the folder**, or the **Models folder** button in the auto-captions window.
 
 To **free up space**, just delete the ones you don't use from that folder. MixMedia asks before downloading one again.
 

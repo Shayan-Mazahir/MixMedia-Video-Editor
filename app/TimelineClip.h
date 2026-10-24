@@ -76,6 +76,13 @@ inline QDataStream& operator>>(QDataStream& in, TitleStyle& t)
            >> t.shadowSoftness >> t.boxColor >> t.wordByWord >> t.highlight >> t.wordsAtOnce;
 }
 
+// A spot on the timeline you've marked (press M), with an optional note
+struct TimelineMarker {
+    double time = 0.0;
+    QString note;
+    bool operator==(const TimelineMarker&) const = default;
+};
+
 // A row on the timeline. FX tracks hold titles, effects and transitions; subtitle tracks hold
 // subtitle lines (and how they all look); the rest hold footage and sound.
 struct TimelineTrack {
@@ -87,10 +94,11 @@ struct TimelineTrack {
     bool operator==(const TimelineTrack&) const = default;
 };
 
-// A setting's value at one moment of a clip. Settings glide smoothly from one to the next.
+// A setting's value at one moment of a clip. Settings glide from one to the next.
 struct Keyframe {
     double time = 0.0; // seconds from the start of the clip
     float value = 0.0f;
+    int ease = VE_EASE_SMOOTH; // how it gets here from the keyframe before
 
     bool operator==(const Keyframe&) const = default;
 };
@@ -135,6 +143,12 @@ struct TimelineClip {
     float rotation = 0;   // degrees, clockwise
     bool flipH = false, flipV = false;
     bool fill = false;    // cover the whole frame (cutting off what hangs over) instead of fitting inside it
+    bool blurFill = false; // the bars around it show a blurred copy of it instead of black
+    // Its frame (handy for a facecam): shape, border and shadow
+    int shape = 0;           // VE_SHAPE_*
+    float cornerRadius = 0.15f, borderWidth = 0.0f, shadow = 0.0f;
+    QColor borderColor = Qt::white;
+    float shake = 0.0f; // 0..1, camera shake
 
     bool reverse = false; // plays backwards
     bool freeze = false;  // holds one frame (the one at `in`) the whole time
@@ -143,6 +157,8 @@ struct TimelineClip {
     bool chromaKey = false;
     QColor keyColor = QColor(0, 200, 60);
     float keyStrength = 0.4f, keySoftness = 0.2f, keySpill = 0.5f;
+    float keyEdges = 0.3f; // pull in and soften the edge
+    bool keyMatte = false; // showing what's see-through, while tuning (never saved, never exported)
 
     // Sound tools
     bool keepPitch = true;    // speeding up/slowing down keeps voices sounding normal
@@ -152,6 +168,8 @@ struct TimelineClip {
 
     // Effects (all 0 = untouched)
     int look = 0;         // VE_LOOK_*
+    QString lutPath;      // a look from a .cube file ("" = none)
+    float lutStrength = 1.0f; // 0..1, how much of it
     float brightness = 0, contrast = 0, saturation = 0, temperature = 0;
     float blur = 0, sharpen = 0, vignette = 0;
 
@@ -166,7 +184,7 @@ struct TimelineClip {
     bool ownStyle = false; // subtitles: this line has its own look instead of the track's
     QList<WordTime> words; // subtitles: when each word is said (empty = spread evenly)
 
-    // Keyframes for size, position, opacity, rotation and volume (indexed by VE_KEY_*), in time order.
+    // Keyframes for size, position, opacity, rotation, volume and shake (indexed by VE_KEY_*), in time order.
     // A setting with none just uses its normal value above.
     std::array<QList<Keyframe>, VE_KEY_COUNT> keys;
 
@@ -184,6 +202,7 @@ struct TimelineClip {
         case VE_KEY_OPACITY: return opacity;
         case VE_KEY_ROTATION: return rotation;
         case VE_KEY_VOLUME: return volume;
+        case VE_KEY_SHAKE: return shake;
         default: return 0.0f;
         }
     }
@@ -196,6 +215,7 @@ struct TimelineClip {
         case VE_KEY_OPACITY: opacity = v; break;
         case VE_KEY_ROTATION: rotation = v; break;
         case VE_KEY_VOLUME: volume = v; break;
+        case VE_KEY_SHAKE: shake = v; break;
         default: break;
         }
     }
@@ -215,20 +235,22 @@ struct TimelineClip {
         const Keyframe& a = k[i - 1];
         const Keyframe& b = k[i];
         double p = b.time > a.time ? (local - a.time) / (b.time - a.time) : 1.0;
-        p = p * p * (3 - 2 * p);
-        return float(a.value + (b.value - a.value) * p);
+        return float(a.value + (b.value - a.value) * ve_ease(b.ease, p));
     }
-    // Adds a keyframe, or changes the one that's already there (within half a frame)
-    void setKey(int param, double local, float value)
+    // Adds a keyframe, or changes the one that's already there (within half a frame).
+    // `ease` -1 = leave how it arrives alone (smooth for a new one).
+    void setKey(int param, double local, float value, int ease = -1)
     {
         QList<Keyframe>& k = keys[size_t(param)];
         for (Keyframe& f : k)
             if (std::abs(f.time - local) < KeySnap) {
                 f.value = value;
+                if (ease >= 0)
+                    f.ease = ease;
                 return;
             }
         auto at = std::lower_bound(k.begin(), k.end(), local, [](const Keyframe& f, double t) { return f.time < t; });
-        k.insert(at, Keyframe { local, value });
+        k.insert(at, Keyframe { local, value, std::max(ease, 0) });
     }
     // Moves every keyframe along (when the start of the clip gets trimmed or split off)
     void shiftKeys(double by)
@@ -269,15 +291,16 @@ inline QDataStream& operator<<(QDataStream& out, const TimelineClip& c)
         << c.speed << c.opacity << c.scale << c.posX << c.posY << c.look << c.brightness << c.contrast
         << c.saturation << c.temperature << c.blur << c.sharpen << c.vignette
         << c.transition << c.transitionDuration << c.animIn << c.animInDuration << c.animOut << c.animOutDuration
-        << c.cropLeft << c.cropRight << c.cropTop << c.cropBottom << c.rotation << c.flipH << c.flipV << c.fill
-        << c.reverse << c.freeze << c.chromaKey << c.keyColor << c.keyStrength << c.keySoftness << c.keySpill
+        << c.cropLeft << c.cropRight << c.cropTop << c.cropBottom << c.rotation << c.flipH << c.flipV << c.fill << c.blurFill << c.lutPath << c.lutStrength
+        << c.shape << c.cornerRadius << c.borderWidth << c.shadow << c.borderColor << c.shake
+        << c.reverse << c.freeze << c.chromaKey << c.keyColor << c.keyStrength << c.keySoftness << c.keySpill << c.keyEdges
         << c.keepPitch << c.denoise << c.duck << c.duckAmount << c.ownStyle << qint32(c.words.size());
     for (const WordTime& w : c.words)
         out << w.word << w.start << w.end;
     for (const QList<Keyframe>& k : c.keys) {
         out << qint32(k.size());
         for (const Keyframe& f : k)
-            out << f.time << f.value;
+            out << f.time << f.value << qint32(f.ease);
     }
     return out;
 }
@@ -292,8 +315,9 @@ inline QDataStream& operator>>(QDataStream& in, TimelineClip& c)
        >> c.speed >> c.opacity >> c.scale >> c.posX >> c.posY >> c.look >> c.brightness >> c.contrast
        >> c.saturation >> c.temperature >> c.blur >> c.sharpen >> c.vignette
        >> c.transition >> c.transitionDuration >> c.animIn >> c.animInDuration >> c.animOut >> c.animOutDuration
-       >> c.cropLeft >> c.cropRight >> c.cropTop >> c.cropBottom >> c.rotation >> c.flipH >> c.flipV >> c.fill
-       >> c.reverse >> c.freeze >> c.chromaKey >> c.keyColor >> c.keyStrength >> c.keySoftness >> c.keySpill
+       >> c.cropLeft >> c.cropRight >> c.cropTop >> c.cropBottom >> c.rotation >> c.flipH >> c.flipV >> c.fill >> c.blurFill >> c.lutPath >> c.lutStrength
+       >> c.shape >> c.cornerRadius >> c.borderWidth >> c.shadow >> c.borderColor >> c.shake
+       >> c.reverse >> c.freeze >> c.chromaKey >> c.keyColor >> c.keyStrength >> c.keySoftness >> c.keySpill >> c.keyEdges
        >> c.keepPitch >> c.denoise >> c.duck >> c.duckAmount >> c.ownStyle;
     qint32 words = 0;
     in >> words;
@@ -309,7 +333,9 @@ inline QDataStream& operator>>(QDataStream& in, TimelineClip& c)
         k.clear();
         for (qint32 i = 0; i < n && in.status() == QDataStream::Ok; ++i) {
             Keyframe f;
-            in >> f.time >> f.value;
+            qint32 ease = 0;
+            in >> f.time >> f.value >> ease;
+            f.ease = ease;
             k << f;
         }
     }

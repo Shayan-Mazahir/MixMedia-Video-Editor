@@ -4,13 +4,18 @@
 #pragma once
 
 #include <QDialog>
+#include <QHash>
+#include <QKeySequence>
+#include <QList>
 
 class NumberSlider;
 class QCheckBox;
 class QLabel;
 class QRadioButton;
+class QTableWidget;
+class QKeySequenceEdit;
 
-// Edit → Settings: how much of the computer MixMedia may use, and update checks.
+// Edit -> Settings: how much of the computer MixMedia may use, and update checks.
 class SettingsDialog : public QDialog {
     Q_OBJECT
 
@@ -33,4 +38,14 @@ private:
     QRadioButton* m_themeDark;
     QRadioButton* m_themeLight;
     QRadioButton* m_themeSystem;
+
+    // Shortcuts: changes wait here until OK (Cancel = forget them)
+    QWidget* buildShortcuts();
+    void showKeys(); // fills the table from what they'd be
+    QList<QKeySequence> keysFor(int row) const;
+    QTableWidget* m_keys = nullptr;
+    QKeySequenceEdit* m_keyEdit = nullptr;
+    QLabel* m_keyNote = nullptr;
+    QHash<QString, QList<QKeySequence>> m_pendingKeys; // by action id
+    bool m_resetAllKeys = false;
 };

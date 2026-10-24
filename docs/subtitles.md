@@ -16,7 +16,7 @@ Everything lives in the **Subtitles** tab on the left, and on the **Subtitles** 
 
 Let MixMedia listen to your video and write the subtitles for you:
 
-1. Click **Auto-captions…** (in the Subtitles tab, or **Edit → Auto-captions…**).
+1. Click **Auto-captions…** (in the Subtitles tab, or **Edit -> Auto-captions…**).
 2. Choose the language that's **really spoken** (**English** by default, or *Work it out*). This matters: pick English for a video in Urdu and it gets slow and muddled, because it's guessing and translating at once.
 3. Tick **translate** if you'd like the subtitles in English whatever's being said.
 4. Choose a **quality** (see below).

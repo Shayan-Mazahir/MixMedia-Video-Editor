@@ -18,7 +18,7 @@ namespace {
 constexpr int FormatVersion = 2; // 2 = tracks are saved, transitions are their own blocks
 
 // Keyframed settings, by name in the file (same order as VE_KEY_*)
-const char* const KeyNames[VE_KEY_COUNT] = { "size", "posX", "posY", "opacity", "rotation", "volume" };
+const char* const KeyNames[VE_KEY_COUNT] = { "size", "posX", "posY", "opacity", "rotation", "volume", "shake" };
 
 // We keep both the full path and one relative to the project, so moving the
 // whole folder (or opening it on another computer) still finds everything.
@@ -149,6 +149,10 @@ QJsonObject clipToJson(const TimelineClip& c, const QDir& dir)
         { "flipH", c.flipH },
         { "flipV", c.flipV },
         { "fill", c.fill },
+        { "blurFill", c.blurFill },
+        { "shake", c.shake },
+        { "frame", QJsonObject { { "shape", c.shape }, { "corners", c.cornerRadius }, { "border", c.borderWidth },
+                                 { "borderColor", c.borderColor.name() }, { "shadow", c.shadow } } },
         { "reverse", c.reverse },
         { "sound", QJsonObject {
             { "keepPitch", c.keepPitch },
@@ -163,9 +167,12 @@ QJsonObject clipToJson(const TimelineClip& c, const QDir& dir)
             { "strength", c.keyStrength },
             { "softness", c.keySoftness },
             { "spill", c.keySpill },
+            { "edges", c.keyEdges },
         } },
         { "effects", QJsonObject {
             { "look", c.look },
+            { "lut", c.lutPath },
+            { "lutStrength", c.lutStrength },
             { "brightness", c.brightness },
             { "contrast", c.contrast },
             { "saturation", c.saturation },
@@ -198,12 +205,13 @@ QJsonObject clipToJson(const TimelineClip& c, const QDir& dir)
         o["file"] = fileRef(c.path, dir);
     }
     if (c.hasKeys()) {
-        // "keyframes": { "size": [[time, value], ...], ... }
+        // "keyframes": { "size": [[time, value], ...], ... } (and a third number for how it
+        // gets there, if that isn't smoothly)
         QJsonObject keys;
         for (int p = 0; p < VE_KEY_COUNT; ++p) {
             QJsonArray list;
             for (const Keyframe& f : c.keys[size_t(p)])
-                list << QJsonArray { f.time, f.value };
+                list << (f.ease ? QJsonArray { f.time, f.value, f.ease } : QJsonArray { f.time, f.value });
             if (!list.isEmpty())
                 keys[KeyNames[p]] = list;
         }
@@ -248,6 +256,14 @@ TimelineClip clipFromJson(const QJsonObject& o, const QDir& dir, QStringList* mi
     c.flipH = o["flipH"].toBool();
     c.flipV = o["flipV"].toBool();
     c.fill = o["fill"].toBool();
+    c.blurFill = o["blurFill"].toBool();
+    c.shake = float(o["shake"].toDouble());
+    const QJsonObject frame = o["frame"].toObject();
+    c.shape = frame["shape"].toInt();
+    c.cornerRadius = float(frame["corners"].toDouble(0.15));
+    c.borderWidth = float(frame["border"].toDouble());
+    c.borderColor = QColor(frame["borderColor"].toString("#ffffff"));
+    c.shadow = float(frame["shadow"].toDouble());
     c.reverse = o["reverse"].toBool();
     QJsonObject sound = o["sound"].toObject();
     c.keepPitch = sound["keepPitch"].toBool(true);
@@ -261,8 +277,11 @@ TimelineClip clipFromJson(const QJsonObject& o, const QDir& dir, QStringList* mi
     c.keyStrength = float(key["strength"].toDouble(0.4));
     c.keySoftness = float(key["softness"].toDouble(0.2));
     c.keySpill = float(key["spill"].toDouble(0.5));
+    c.keyEdges = float(key["edges"].toDouble(0.3));
     QJsonObject fx = o["effects"].toObject();
     c.look = fx["look"].toInt();
+    c.lutPath = fx["lut"].toString();
+    c.lutStrength = float(fx["lutStrength"].toDouble(1.0));
     c.brightness = float(fx["brightness"].toDouble());
     c.contrast = float(fx["contrast"].toDouble());
     c.saturation = float(fx["saturation"].toDouble());
@@ -296,8 +315,8 @@ TimelineClip clipFromJson(const QJsonObject& o, const QDir& dir, QStringList* mi
     for (int p = 0; p < VE_KEY_COUNT; ++p) {
         for (const QJsonValue& v : keys[KeyNames[p]].toArray()) {
             QJsonArray pair = v.toArray();
-            if (pair.size() == 2)
-                c.setKey(p, pair[0].toDouble(), float(pair[1].toDouble()));
+            if (pair.size() >= 2)
+                c.setKey(p, pair[0].toDouble(), float(pair[1].toDouble()), pair.size() > 2 ? std::clamp(pair.at(2).toInt(), 0, VE_EASE_COUNT - 1) : 0);
         }
     }
     return c;
@@ -325,6 +344,9 @@ bool save(const QString& path, const Data& data, QString* error)
         tracks << track;
     }
 
+    QJsonArray markers;
+    for (const TimelineMarker& m : data.markers)
+        markers << QJsonObject { { "time", m.time }, { "note", m.note } };
     QJsonObject root {
         { "app", "MixMedia Video Editor" },
         { "version", FormatVersion },
@@ -332,7 +354,8 @@ bool save(const QString& path, const Data& data, QString* error)
         { "project", QJsonObject { { "shape", data.settings.shape },
                                    { "resolution", data.settings.resolution },
                                    { "fps", data.settings.fps } } },
-        { "timeline", QJsonObject { { "playhead", data.playhead }, { "tracks", tracks }, { "clips", clips } } },
+        { "timeline", QJsonObject { { "playhead", data.playhead }, { "tracks", tracks }, { "clips", clips },
+                                    { "markers", markers } } },
     };
 
     // QSaveFile writes to a temp file first, so a crash mid-save can't wreck your project
@@ -391,6 +414,8 @@ bool load(const QString& path, Data* data, QStringList* missing, QString* error)
             track.style = styleFromJson(t["style"].toObject(), TitleStyle::subtitles());
         data->tracks << track;
     }
+    for (const QJsonValue& v : timeline["markers"].toArray())
+        data->markers << TimelineMarker { v.toObject()["time"].toDouble(), v.toObject()["note"].toString() };
     for (const QJsonValue& c : timeline["clips"].toArray())
         data->clips << clipFromJson(c.toObject(), dir, missing);
     return true;

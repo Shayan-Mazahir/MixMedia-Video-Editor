@@ -19,6 +19,7 @@ struct Data {
     QList<TimelineClip> clips;  // thumbnails aren't saved, they get remade on open
     QList<TimelineTrack> tracks; // empty = an older project (from before FX tracks)
     double playhead = 0.0;
+    QList<TimelineMarker> markers;
     ProjectSettings settings;
 };
 

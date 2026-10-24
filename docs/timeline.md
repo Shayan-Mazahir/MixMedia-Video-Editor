@@ -23,12 +23,23 @@ Each video track shows on top of the ones below it, so stacking 5 videos means 5
 
 - **Move**: drag the middle of a clip. It snaps to the playhead and other clips' edges.
 - **Trim**: drag the left or right edge.
-- **Split**: put the playhead where you want the cut and press **S** (or right-click → *Split here*).
+- **Split**: put the playhead where you want the cut and press **S** (or right-click -> *Split here*).
 - **Delete**: select it and press **Delete**. Everything after it slides back to close the gap ("ripple delete"). **Shift+Delete** leaves the gap.
+
+## Markers
+
+Mark spots on the timeline to come back to, like "intro ends here" or "fix this bit":
+
+- Press **M** to drop a marker at the playhead (an orange flag on the ruler). Press **M** again on the same spot to take it away.
+- **Double-click** a marker to write a note. It shows on the ruler next to it, and when you hover over it.
+- **Right-click** the ruler to add a marker there, write a note, or remove one (or all of them).
+- **↑** and **↓** jump between cuts *and* markers, and clips snap to markers when you drag them.
+
+Markers are saved with the project, **Ctrl+Z** undoes them like anything else, and *Cut out the quiet bits* moves them along with the video.
 
 ## Cutting out the quiet bits
 
-Talking to the camera and pausing a lot? **Edit → Cut out the quiet bits…** finds the pauses and cuts them out for you (the "jump cut" style).
+Talking to the camera and pausing a lot? **Edit -> Cut out the quiet bits…** finds the pauses and cuts them out for you (the "jump cut" style).
 
 1. It listens to the timeline (a few seconds, even for an hour of video).
 2. Then you choose:
@@ -50,7 +61,7 @@ Then drag any of them to move them all together, or delete them all at once.
 
 ## Copy and paste
 
-**Ctrl+C** copies the selected clips, **Ctrl+X** cuts them, and **Ctrl+V** pastes them at the playhead, keeping how they sit next to each other. If something's already there, they slide along to the next free spot. You can also right-click empty space → *Paste here*.
+**Ctrl+C** copies the selected clips, **Ctrl+X** cuts them, and **Ctrl+V** pastes them at the playhead, keeping how they sit next to each other. If something's already there, they slide along to the next free spot. You can also right-click empty space -> *Paste here*.
 
 ## Detaching sound
 
